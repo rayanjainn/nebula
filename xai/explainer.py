@@ -20,19 +20,53 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "nebula"))
 
 
-# Known malicious API patterns from paper Table 11 & domain knowledge
+# Known malicious API patterns — full names AND BPE subword fragments
+# BPE splits long API names so we match partial tokens too
 MALICIOUS_PATTERNS = {
-    "privilege_escalation": ["advapi32", "setprivilege", "adjusttokenprivileges", "openprocesstoken"],
-    "persistence": ["regsetvalue", "regcreatekey", "scheduledtask", "createservice"],
-    "network_c2": ["getsockobj", "wsastartup", "connect", "send", "recv", "httpopenrequest"],
-    "ransomware": ["cryptencrypt", "cryptgenkey", "setfileattributes", "movefileex"],
-    "process_injection": ["virtualalloc", "writeprocessmemory", "createremotethread", "ntunmapviewofsection"],
-    "defense_evasion": ["setenvnvar", "isdebuggerpresent", "checkremotedebugger", "ntqueryinformationprocess"],
-    "file_ops": ["createfile", "readfile", "writefile", "deletefile", "copyfile"],
-    "ui_interaction": ["0xcf0000", "createwindowex", "showwindow", "messagebox"],
+    "privilege_escalation": [
+        "advapi", "setpriv", "privilege", "adjusttoken", "openprocess",
+        "impersonate", "revert", "logonuser", "lsaopen",
+    ],
+    "persistence": [
+        "regset", "regcreate", "regopen", "regwrite", "regedit",
+        "scheduledtask", "createservice", "openservice", "startservice",
+        "runkey", "autorun", "startup",
+    ],
+    "network_c2": [
+        "wsastartup", "wsasocket", "connect", "recv", "send", "socket",
+        "httpopen", "httpsend", "internetopen", "internetconnect",
+        "urldownload", "winhttp", "getaddrinfo", "gethostby",
+    ],
+    "ransomware": [
+        "cryptencrypt", "cryptgen", "cryptacquire", "cryptimport",
+        "setfileattr", "movefileex", "deletefile", "findnextfile",
+        "vssadmin", "shadowcopy", "bcdedit",
+    ],
+    "process_injection": [
+        "virtualalloc", "writeprocess", "createremote", "ntunmap",
+        "ntwrite", "ntcreate", "queueuserapc", "setthread",
+        "openprocess", "ntopen", "zwopen", "mapview",
+    ],
+    "defense_evasion": [
+        "isdebugg", "checkremote", "ntquery", "zwquery",
+        "setenv", "unmap", "sleep", "zwclose", "exitprocess",
+        "terminateprocess", "virtualprotect", "heapfree",
+    ],
+    "file_ops": [
+        "createfile", "readfile", "writefile", "deletefile", "copyfile",
+        "openfile", "findfile", "gettemp", "movefile", "setfile",
+    ],
+    "ui_interaction": [
+        "createwindow", "showwindow", "messagebox", "findwindow",
+        "postmessage", "sendmessage", "setwindow", "destroywindow",
+    ],
 }
 
-BENIGN_PATTERNS = ["getcurthread", "findatoma", "heapalloc", "getprocheap", "tlsgetvalue"]
+BENIGN_PATTERNS = [
+    "getcurthread", "findatom", "heapalloc", "getprocheap",
+    "tlsgetvalue", "getmodule", "loadlibrary", "freelibrary",
+    "getprocaddr", "queryperform",
+]
 
 
 def _decode_tokens(tokenizer, ids_arr: np.ndarray) -> List[str]:
@@ -217,18 +251,19 @@ class IntegratedGradients:
         attributions = integrated_grads * (emb_input - emb_baseline)
         # Aggregate over embedding dimension
         attributions = attributions.abs().mean(dim=-1).squeeze(0)
-        return attributions.cpu().numpy()
+        return attributions.detach().cpu().numpy()
 
     def _forward_with_emb(self, emb: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
         """Forward pass bypassing embedding layer, using provided emb directly."""
         import math
+        device = emb.device
         # Scale embedding
         d_model = emb.shape[-1]
         emb_scaled = emb * math.sqrt(d_model)
 
-        # Add CLS token
+        # Add CLS token — explicitly move to emb's device to avoid MPS/CPU mismatch
         B = emb.size(0)
-        cls = self.model.cls_token.expand(B, -1, -1)
+        cls = self.model.cls_token.to(device).expand(B, -1, -1)
         emb_with_cls = torch.cat([cls, emb_scaled], dim=1)
 
         # Positional encoding
@@ -242,8 +277,16 @@ class IntegratedGradients:
 
         combined = torch.cat([cls_tok, seq_tok], dim=1)
         combined = self.model.global_attn(combined)
-        pooled = self.model.norm(combined[:, 0, :])
-        return self.model.classifier(pooled)
+        
+        # Match model's pooling logic
+        if self.model.pooling == "cls":
+            pooled = combined[:, 0, :]
+        elif self.model.pooling == "mean":
+            pooled = combined[:, 1:, :].mean(dim=1)
+        else:  # max
+            pooled = combined[:, 1:, :].max(dim=1).values
+
+        return self.model.classifier(self.model.norm(pooled))
 
 
 class BehaviorAnalyzer:
@@ -266,18 +309,24 @@ class BehaviorAnalyzer:
         results: Dict[str, List] = {cat: [] for cat in MALICIOUS_PATTERNS}
         results["unknown_suspicious"] = []
 
+        # Dynamic threshold: top-20% of scores in this sample
+        scores = [s for _, s in top_tokens]
+        threshold = sorted(scores, reverse=True)[max(0, len(scores)//5)] if scores else 0.0
+
         for token, score in top_tokens:
             matched = False
-            token_lower = token.lower()
+            token_clean = token.lower().lstrip("▁").lstrip("Ġ")
+            if len(token_clean) < 3:   # skip single/double-char BPE fragments
+                continue
             for category, patterns in MALICIOUS_PATTERNS.items():
                 for pat in patterns:
-                    if pat in token_lower or token_lower in pat:
+                    if pat in token_clean or token_clean in pat:
                         results[category].append((token, score))
                         matched = True
                         break
                 if matched:
                     break
-            if not matched and score > 0.1:
+            if not matched and score >= threshold:
                 results["unknown_suspicious"].append((token, score))
 
         # Remove empty categories
@@ -335,17 +384,20 @@ def explain_sample(
             "top_tokens": [(token, score), ...]
         }
     """
+    # Always use CPU for XAI — MPS has known issues with backward() during IG
+    device = "cpu"
     model = model.to(device).eval()
 
     # Attention-based importance
     viz = AttentionVisualizer(model, device)
     attn_importance = viz.get_token_importance_from_attention(input_ids, tokenizer)
 
-    # Integrated gradients (slower, skip for large batches)
+    # Integrated gradients (slower, but useful for deep analysis)
     ig_attr = None
     if use_ig:
         try:
-            ig = IntegratedGradients(model, device, n_steps=20)
+            # 15 steps provides a good balance of speed (~1s) and accuracy
+            ig = IntegratedGradients(model, device, n_steps=15)
             ig_attr = ig.compute_attributions(input_ids)
         except Exception as e:
             ig_attr = None

@@ -31,25 +31,25 @@ WHITESPACE_VOCAB = str(NEBULA_OBJECTS / "whitespace_50000_vocab.json")
 MODEL_CONFIG = {
     "vocab_size": 50000,
     "seq_len": 512,
-    "d_model": 64,
+    "d_model": 128,
     "n_heads": 8,
-    "d_hidden": 256,
-    "n_layers": 2,
-    "dropout": 0.3,
+    "d_hidden": 512,
+    "n_layers": 3,
+    "dropout": 0.1,
     "num_classes": 1,          # binary detection
-    "classifier_head": [64],
+    "classifier_head": [128, 64],
     "attention_span": 64,      # chunked attention from paper (S=64, N=512 → M=8 spans)
     "norm_first": True,
 }
 
 # Training
 TRAIN_CONFIG = {
-    "batch_size": 32,
-    "lr": 2.5e-4,
+    "batch_size": 256,
+    "lr": 5e-5,
     "weight_decay": 1e-2,
     "grad_clip": 1.0,
-    "epochs": 10,
-    "time_budget_minutes": 15,
+    "epochs": 30,
+    "time_budget_minutes": 55,
     "beta1": 0.9,
     "beta2": 0.999,
     "eps": 1e-8,

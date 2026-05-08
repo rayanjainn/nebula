@@ -26,28 +26,47 @@ from sklearn.metrics import (
 # ── helpers ──────────────────────────────────────────────────
 
 def encode_jsonl(path, tokenizer, seq_len):
-    """Read merged_dataset.jsonl → (X: ndarray, y: list)"""
+    """Read merged_dataset.jsonl → (X: ndarray, y: list) with progress logging."""
     from pipeline.preprocessor import SpeakeasyPreprocessor
     import json as _json
     pp = SpeakeasyPreprocessor()
     texts, labels = [], []
+
+    # Count lines first for progress
+    total_lines = sum(1 for _ in open(path))
+    print(f"      Total lines in file: {total_lines:,}")
+
+    t0 = time.time()
+    skipped = 0
     with open(path) as f:
-        for line in f:
+        for i, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
             row = _json.loads(line)
-            if row.get("label", -1) < 0:
+            if row.get("label", -1) not in (0, 1):
+                skipped += 1
                 continue
             text = pp.process_row(row)
             ids = tokenizer.encode(text)
-            # tokenizer returns (1, seq_len) array
             if hasattr(ids, "shape") and len(ids.shape) == 2:
                 ids = ids[0]
             ids = list(ids)[:seq_len]
             ids += [0] * (seq_len - len(ids))
             texts.append(ids)
             labels.append(int(row["label"]))
+
+            if (i + 1) % 5000 == 0 or (i + 1) == total_lines:
+                elapsed = time.time() - t0
+                pct = (i + 1) / total_lines * 100
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                eta = (total_lines - i - 1) / rate if rate > 0 else 0
+                mal = sum(1 for l in labels if l == 1)
+                ben = len(labels) - mal
+                print(f"      [{i+1:>6,}/{total_lines:,}  {pct:5.1f}%]  "
+                      f"valid={len(texts):,}  mal={mal:,}  ben={ben:,}  "
+                      f"skipped={skipped:,}  {elapsed:.0f}s elapsed  ETA {eta:.0f}s")
+
     return np.array(texts, dtype=np.int64), np.array(labels, dtype=np.float32)
 
 
@@ -120,11 +139,12 @@ def main():
     print("      ✓ done")
 
     # 2. encode dataset
-    print("\n[2/6] Encoding dataset…")
-    data_path = os.path.join(ROOT, "data", "merged_dataset.jsonl")
+    print("\n[2/6] Encoding deduplicated dataset…")
+    data_path = os.path.join(ROOT, "data", "merged_dataset_deduped.jsonl")
     X, y = encode_jsonl(data_path, tok, SEQ_LEN)
-    print(f"      ✓ {len(X)} samples | shape {X.shape}")
-    print(f"      ✓ malicious: {int(y.sum())} ({y.mean():.1%}) | benign: {int((y==0).sum())}")
+    print(f"      ✓ {len(X):,} samples | shape {X.shape}")
+    print(f"      ✓ malicious: {int(y.sum()):,} ({y.mean():.1%}) | benign: {int((y==0).sum()):,}")
+    print(f"      ✓ No balancing needed — dataset is naturally 53/47 after dedup")
 
     # 3. dataloaders
     print("\n[3/6] Splitting train/val (80/20 stratified)…")
@@ -146,7 +166,12 @@ def main():
     history_e = trainer_e.train(train_loader, val_loader,
                                 epochs=EPOCHS, time_budget_minutes=BUDGET, verbose=True)
     elapsed_e = time.time() - t0
-    print(f"\n      ✓ done in {elapsed_e/60:.1f}m | best AUC: {max(history_e['val_auc']):.4f} @ epoch {trainer_e.best_epoch}")
+    best_auc_e = max(history_e['val_auc'])
+    best_f1_e  = max(history_e['val_f1'])
+    print(f"\n      ✓ Enhanced done in {elapsed_e/60:.1f}m")
+    print(f"      ✓ Best AUC:  {best_auc_e:.4f}  @ epoch {trainer_e.best_epoch}")
+    print(f"      ✓ Best F1:   {best_f1_e:.4f}")
+    print(f"      ✓ Epochs run: {len(history_e['train_loss'])}")
 
     # 5. train NebulaPaper baseline
     print("\n[5/6] Training NebulaPaper baseline…")
@@ -162,9 +187,10 @@ def main():
     )
     t1 = time.time()
     history_p = trainer_p.train(train_loader, val_loader,
-                                epochs=EPOCHS, time_budget_minutes=BUDGET, verbose=True)
+                                epochs=EPOCHS, time_budget_minutes=min(BUDGET, 15), verbose=True)
     elapsed_p = time.time() - t1
-    print(f"\n      ✓ done in {elapsed_p/60:.1f}m | best AUC: {max(history_p['val_auc']):.4f}")
+    print(f"\n      ✓ Baseline done in {elapsed_p/60:.1f}m")
+    print(f"      ✓ Best AUC:  {max(history_p['val_auc']):.4f}  @ epoch {trainer_p.best_epoch}")
 
     # 6. evaluate
     print("\n[6/6] Full evaluation…")

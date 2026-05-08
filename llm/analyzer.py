@@ -11,6 +11,7 @@ Features:
 import json
 import logging
 import requests
+from datetime import date as _date
 from typing import Dict, List, Optional, Generator
 
 log = logging.getLogger(__name__)
@@ -133,8 +134,10 @@ class MalwareAnalyzer:
         self.client = client or OllamaClient()
 
     def _build_messages(self, user_content: str) -> List[Dict]:
+        today = _date.today().isoformat()
+        system = SYSTEM_PROMPT + f"\n\nToday's date is {today}. Do not invent dates — if you mention a date, use today's date or omit it."
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ]
 

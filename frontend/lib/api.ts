@@ -49,10 +49,13 @@ export const api = {
 
   datasetStats: () => request<DatasetStats>("/dataset/stats"),
 
-  datasetSample: (n = 10, label?: number) => {
-    const params = new URLSearchParams({ n: String(n) });
+  datasetSample: (page = 1, limit = 10, label?: number, family?: string, search?: string, balanced = false) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
     if (label !== undefined) params.set("label", String(label));
-    return request<{ samples: SampleRow[]; total_available: number }>(`/dataset/sample?${params}`);
+    if (family) params.set("family", family);
+    if (search) params.set("search", search);
+    if (balanced) params.set("balanced", "true");
+    return request<{ samples: SampleRow[]; total: number; page: number; limit: number }>(`/dataset/sample?${params}`);
   },
 
   trainStart: (config: TrainConfig) =>
@@ -71,6 +74,12 @@ export const api = {
     request<{ term: string; explanation: string }>("/explain/term", {
       method: "POST",
       body: JSON.stringify({ term, context }),
+    }),
+
+  datasetSummarize: (apis: string[], label?: number, family?: string) =>
+    request<{ summary: string }>("/dataset/summarize", {
+      method: "POST",
+      body: JSON.stringify({ apis, label, family }),
     }),
 
   explainVerdict: (
@@ -169,6 +178,7 @@ export interface LLMAnalysisResult {
 
 export interface DatasetStats {
   total: number;
+  total_records: number;
   malicious: number;
   benign: number;
   malicious_pct: number;
@@ -176,13 +186,14 @@ export interface DatasetStats {
   sources: Record<string, number>;
   avg_api_calls: number;
   max_api_calls: number;
+  full_dataset_found: boolean;
 }
 
 export interface SampleRow {
   sha256: string;
   label: number;
   family: string;
-  ep_type: string;
+  threads: number;
   api_count: number;
   top_apis: string[];
   has_network: boolean;
@@ -226,4 +237,6 @@ export interface ExampleInfo {
   sha256: string;
   entry_points: number;
   sample_apis: string[];
+  family?: string;
+  verdict?: "malicious" | "benign";
 }

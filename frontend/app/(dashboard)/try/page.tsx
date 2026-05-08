@@ -1,57 +1,23 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
+import type { ExampleInfo } from "@/lib/api";
 import {
   Sparkles, Play, Loader2, AlertTriangle, CheckCircle,
   ChevronDown, ChevronUp, Lightbulb, Info, RefreshCw
 } from "lucide-react";
 import MarkdownText from "@/components/MarkdownText";
 
-// Guided examples the user can click to prefill
-const GUIDED_EXAMPLES = [
-  {
-    label: "Ransomware — file encryption",
-    color: "#dc2626",
-    bg: "#fef2f2",
-    description: "A program that locks your files and demands payment",
-    apis: "VirtualAlloc CreateFileW ReadFile CryptAcquireContextW CryptEncrypt WriteFile DeleteFileW WSAConnect send recv RegSetValueEx",
-  },
-  {
-    label: "Process Injection — hiding in other programs",
-    color: "#f97316",
-    bg: "#fff7ed",
-    description: "Malware that hides inside a legitimate Windows process",
-    apis: "OpenProcess VirtualAllocEx WriteProcessMemory CreateRemoteThread GetProcAddress LoadLibraryA NtCreateThreadEx",
-  },
-  {
-    label: "Keylogger — recording keystrokes",
-    color: "#8b5cf6",
-    bg: "#f5f3ff",
-    description: "A spy program that records everything you type",
-    apis: "SetWindowsHookExA GetMessage CallNextHookEx CreateFileW WriteFile RegSetValueEx CreateProcess",
-  },
-  {
-    label: "Backdoor — remote control",
-    color: "#6366f1",
-    bg: "#eef2ff",
-    description: "A hidden door that lets attackers control your PC",
-    apis: "WSAStartup WSAConnect send recv CreateProcess ShellExecuteW RegCreateKeyEx RegSetValueEx GetTempPathW WriteFile",
-  },
-  {
-    label: "Safe program — file editor",
-    color: "#16a34a",
-    bg: "#f0fdf4",
-    description: "A normal, benign Windows application",
-    apis: "CreateFileW ReadFile WriteFile CloseHandle GetFileSize SetFilePointer GetLastError ExitProcess",
-  },
-  {
-    label: "Safe program — web browser behavior",
-    color: "#0284c7",
-    bg: "#f0f9ff",
-    description: "Typical behavior from a legitimate browser",
-    apis: "WSAConnect send recv CreateFileW WriteFile ReadFile GetSystemInfo GetUserNameW RegOpenKeyEx",
-  },
-];
+const FAMILY_META: Record<string, { color: string; bg: string; label: string; description: string }> = {
+  ransomware: { color: "#dc2626", bg: "#fef2f2", label: "Ransomware — file encryption", description: "Encrypts your files and demands payment to restore them." },
+  backdoor:   { color: "#6366f1", bg: "#eef2ff", label: "Backdoor — remote control", description: "Opens a hidden channel for attackers to control your PC." },
+  trojan:     { color: "#f59e0b", bg: "#fffbeb", label: "Trojan — disguised malware", description: "Looks legitimate but carries a malicious payload." },
+  rat:        { color: "#f97316", bg: "#fff7ed", label: "RAT — remote access trojan", description: "Full remote control: screen capture, keylogging, file theft." },
+  keylogger:  { color: "#8b5cf6", bg: "#f5f3ff", label: "Keylogger — keystroke spy", description: "Silently records everything you type, including passwords." },
+  coinminer:  { color: "#0891b2", bg: "#ecfeff", label: "Coinminer — crypto hijack", description: "Hijacks your CPU to mine cryptocurrency without your knowledge." },
+  dropper:    { color: "#64748b", bg: "#f8fafc", label: "Dropper — malware installer", description: "Downloads and installs other malware once it gets in." },
+  benign:     { color: "#16a34a", bg: "#f0fdf4", label: "Safe program — benign", description: "A normal Windows application with no malicious behavior." },
+};
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: "#dc2626",
@@ -85,6 +51,38 @@ export default function TryPage() {
   } | null>(null);
   const [error, setError] = useState("");
   const [showDetails, setShowDetails] = useState(false);
+  const [realExamples, setRealExamples] = useState<ExampleInfo[]>([]);
+  const [exampleLoading, setExampleLoading] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listExamples().then((r) => setRealExamples(r.examples)).catch(() => {});
+  }, []);
+
+  async function runExample(ex: ExampleInfo) {
+    setExampleLoading(ex.name);
+    setError("");
+    setResult(null);
+    try {
+      const report = await api.getExample(ex.name);
+      const r = await api.predict(report as object, true, false);
+      setResult(r as typeof result);
+      setExampleLoading(null);
+      setExplainLoading(true);
+      try {
+        const exp = await api.explainVerdict(
+          (r as { verdict: string }).verdict,
+          (r as { probability: number }).probability,
+          (r as { xai?: { top_tokens: [string, number][] } }).xai?.top_tokens ?? [],
+          ((r as { xai?: { behavior_map: Record<string, unknown> } }).xai?.behavior_map ?? {}) as Record<string, unknown>
+        );
+        setResult((prev) => prev ? { ...prev, explanation: exp.explanation } : prev);
+      } catch { /* non-critical */ }
+      setExplainLoading(false);
+    } catch (e: unknown) {
+      setExampleLoading(null);
+      setError(e instanceof Error ? e.message : "Failed to load example.");
+    }
+  }
 
   async function run() {
     if (!input.trim()) return;
@@ -135,6 +133,8 @@ export default function TryPage() {
     setMode("apis");
     setResult(null);
     setError("");
+    // Scroll to input
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   const isMalicious = result?.verdict === "MALICIOUS";
@@ -230,27 +230,43 @@ export default function TryPage() {
         )}
       </div>
 
-      {/* Guided examples */}
-      <div>
-        <h2 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-          <Lightbulb size={14} className="text-amber-500" />
-          Guided examples — click one to prefill and run
-        </h2>
-        <div className="grid grid-cols-2 gap-3">
-          {GUIDED_EXAMPLES.map((ex) => (
-            <button
-              key={ex.label}
-              onClick={() => useExample(ex.apis)}
-              className="text-left p-4 rounded-xl border transition-all hover:shadow-md hover:-translate-y-0.5"
-              style={{ background: ex.bg, borderColor: ex.color + "40" }}
-            >
-              <p className="text-xs font-bold mb-0.5" style={{ color: ex.color }}>{ex.label}</p>
-              <p className="text-xs text-slate-500 leading-relaxed">{ex.description}</p>
-              <p className="text-[10px] font-mono text-slate-400 mt-2 truncate">{ex.apis.split(" ").slice(0, 4).join(" ")}…</p>
-            </button>
-          ))}
+      {/* Real examples from dataset */}
+      {realExamples.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700 mb-1 flex items-center gap-2">
+            <Lightbulb size={14} className="text-amber-500" />
+            Real malware samples — click one to analyze instantly
+          </h2>
+          <p className="text-xs text-slate-400 mb-3">
+            These are real samples from the Speakeasy emulation dataset — full API traces, not simplified examples. Results are accurate.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {realExamples.map((ex) => {
+              const family = ex.family ?? "unknown";
+              const meta = FAMILY_META[family] ?? { color: "#64748b", bg: "#f8fafc", label: family, description: "" };
+              const isRunning = exampleLoading === ex.name;
+              return (
+                <button
+                  key={ex.name}
+                  onClick={() => runExample(ex)}
+                  disabled={!!exampleLoading}
+                  className="text-left p-4 rounded-xl border transition-all hover:shadow-md hover:-translate-y-0.5 disabled:opacity-60"
+                  style={{ background: meta.bg, borderColor: meta.color + "40" }}
+                >
+                  <div className="flex items-center justify-between mb-0.5">
+                    <p className="text-xs font-bold" style={{ color: meta.color }}>{meta.label}</p>
+                    {isRunning && <Loader2 size={12} className="animate-spin text-slate-400" />}
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed">{meta.description}</p>
+                  <p className="text-[10px] font-mono text-slate-400 mt-2 truncate">
+                    {ex.sample_apis.slice(0, 3).map(a => a.replace(/^.*?\./, "")).join(", ")}…
+                  </p>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Result */}
       {result && (
@@ -331,8 +347,8 @@ export default function TryPage() {
                         {BEHAVIOR_PLAIN[cat] ?? "Behavior pattern detected in this program."}
                       </p>
                       <div className="flex flex-wrap gap-1 mt-1.5">
-                        {tokens.slice(0, 4).map(([t]) => (
-                          <code key={t} className="text-[10px] px-1.5 py-0.5 bg-slate-100 rounded text-slate-600 font-mono">
+                        {tokens.slice(0, 4).map(([t], ti) => (
+                          <code key={`${t}_${ti}`} className="text-[10px] px-1.5 py-0.5 bg-slate-100 rounded text-slate-600 font-mono">
                             {t}
                           </code>
                         ))}
@@ -356,8 +372,8 @@ export default function TryPage() {
               </button>
               {showDetails && (
                 <div className="mt-4 space-y-2">
-                  {result.xai.top_tokens.slice(0, 10).map(([token, score]) => (
-                    <div key={token} className="flex items-center gap-3">
+                  {result.xai.top_tokens.slice(0, 10).map(([token, score], ti) => (
+                    <div key={`${token}_${ti}`} className="flex items-center gap-3">
                       <code className="text-xs font-mono text-slate-700 w-48 truncate">{token}</code>
                       <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
                         <div

@@ -138,7 +138,7 @@ export default function LLMPage() {
                   {showExampleContent ? "Hide" : "Show"} Example Content
                 </button>
                 {showExampleContent && (
-                  <pre className="mt-2 text-[10px] font-mono text-slate-600 bg-slate-50 p-2 border rounded overflow-y-auto max-h-48">
+                  <pre className="mt-2 text-[10px] font-mono text-slate-600 bg-slate-50 p-2 border rounded overflow-auto max-h-64">
                     {exampleContent || "Loading..."}
                   </pre>
                 )}

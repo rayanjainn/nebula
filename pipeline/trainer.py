@@ -162,7 +162,7 @@ class NebulaTrainer:
         metrics = {
             "loss": total_loss / max(n_batches, 1),
             "acc": accuracy_score(all_labels, all_preds),
-            "f1": f1_score(all_labels, all_preds, zero_division=0),
+            "f1": f1_score(all_labels, all_preds, average="binary", zero_division=0),
         }
 
         try:
@@ -195,7 +195,7 @@ class NebulaTrainer:
         Returns full training history.
         """
         n_steps = epochs * len(train_loader)
-        scheduler = self._get_cosine_schedule(n_steps, warmup_steps=min(200, n_steps // 10))
+        scheduler = self._get_cosine_schedule(n_steps, warmup_steps=min(500, n_steps // 5))
 
         t_start = time.time()
         budget_secs = time_budget_minutes * 60 if time_budget_minutes else None
@@ -221,17 +221,24 @@ class NebulaTrainer:
                 self.save_checkpoint(epoch, val_metrics, is_best=True)
 
             if verbose:
-                log.info(
-                    f"Epoch {epoch:3d} | "
+                elapsed_total = time.time() - t_start
+                is_best_str = " ◀ best" if val_metrics["auc"] >= self.best_val_auc else ""
+                msg = (
+                    f"Epoch {epoch:3d}/{epochs} | "
                     f"Loss {train_loss:.4f} | "
                     f"Val AUC {val_metrics['auc']:.4f} | "
                     f"F1 {val_metrics['f1']:.4f} | "
+                    f"Prec {val_metrics.get('acc',0):.4f} | "
                     f"TPR@FPR1e-3 {val_metrics['tpr_at_fpr1e3']:.4f} | "
-                    f"{epoch_time:.1f}s"
+                    f"{epoch_time:.1f}s/epoch | "
+                    f"{elapsed_total/60:.1f}min elapsed"
+                    f"{is_best_str}"
                 )
+                log.info(msg)
+                import sys; sys.stdout.flush()
 
             if budget_secs and (time.time() - t_start) >= budget_secs:
-                log.info(f"Time budget of {time_budget_minutes:.0f}min reached at epoch {epoch}.")
+                log.info(f"Time budget of {time_budget_minutes:.0f}min reached at epoch {epoch}. Best AUC: {self.best_val_auc:.4f} @ epoch {self.best_epoch}.")
                 break
 
         return self.history
@@ -250,7 +257,7 @@ class NebulaTrainer:
     def load_best(self):
         path = self.checkpoint_dir / f"{self.run_name}_best.pt"
         if path.exists():
-            ckpt = torch.load(path, map_location=self.device)
+            ckpt = torch.load(path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(ckpt["model_state_dict"])
             log.info(f"Loaded best checkpoint from epoch {ckpt['epoch']}")
         return self.model

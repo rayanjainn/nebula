@@ -1,9 +1,33 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+venv
+.env
+
+# Node / Next.js
 node_modules
 .next
-venv
-__pycache__
-.env
-.claude
+.env.local
+
+# Data — large files, not for version control
 data/*.jsonl
 data/*.json
+data/full/
+data/download.log
+
+# Model checkpoints & weights
 models/checkpoints/*.pt
+*.pt
+
+# Kaggle notebook — contains embedded base64 tokenizer (~3MB), not needed in repo
+nebula_enhanced_kaggle.ipynb
+
+# Training artifacts at root (downloaded from Kaggle, now moved to checkpoints)
+training_results.json
+
+# Claude memory
+.claude
+
+# macOS
+.DS_Store

@@ -1,10 +1,10 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { api, TrainingStatus } from "@/lib/api";
+import { api, TrainingStatus, DatasetStats } from "@/lib/api";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend
 } from "recharts";
-import { Zap, Play, StopCircle, Loader2, CheckCircle, AlertCircle, Clock } from "lucide-react";
+import { Zap, Play, StopCircle, Loader2, CheckCircle, AlertCircle, Clock, Database } from "lucide-react";
 
 export default function TrainingPage() {
   const [config, setConfig] = useState({
@@ -14,6 +14,7 @@ export default function TrainingPage() {
     lr: 0.00025,
   });
   const [status, setStatus] = useState<TrainingStatus | null>(null);
+  const [datasetStats, setDatasetStats] = useState<DatasetStats | null>(null);
   const [polling, setPolling] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
@@ -21,6 +22,7 @@ export default function TrainingPage() {
 
   useEffect(() => {
     api.trainStatus().then(setStatus).catch(() => {});
+    api.datasetStats().then(setDatasetStats).catch(() => {});
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
@@ -70,6 +72,35 @@ export default function TrainingPage() {
           AdamW + cosine LR warmup + label smoothing · time-budgeted training
         </p>
       </div>
+
+      {/* Dataset info banner */}
+      {datasetStats && (
+        <div className="card p-4 bg-gradient-to-r from-slate-50 to-indigo-50 border border-indigo-100">
+          <div className="flex items-center gap-2 mb-3">
+            <Database size={14} className="text-indigo-500" />
+            <span className="text-sm font-semibold text-slate-700">Training Data Available</span>
+          </div>
+          <div className="grid grid-cols-5 gap-3">
+            {[
+              { label: "Total Samples", value: datasetStats.total.toLocaleString(), color: "#6366f1" },
+              { label: "Malicious", value: datasetStats.malicious.toLocaleString(), color: "#ef4444", sub: `${datasetStats.malicious_pct}%` },
+              { label: "Benign", value: datasetStats.benign.toLocaleString(), color: "#10b981", sub: `${(100 - datasetStats.malicious_pct).toFixed(1)}%` },
+              { label: "Avg API Calls", value: datasetStats.avg_api_calls.toString(), color: "#f59e0b" },
+              { label: "Families", value: Object.keys(datasetStats.families).length.toString(), color: "#8b5cf6", sub: Object.keys(datasetStats.families).join(", ") },
+            ].map((s) => (
+              <div key={s.label} className="bg-white rounded-lg px-3 py-2 shadow-sm">
+                <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-0.5">{s.label}</p>
+                <p className="font-bold text-sm" style={{ color: s.color }}>{s.value}</p>
+                {s.sub && <p className="text-[10px] text-slate-400 truncate" title={s.sub}>{s.sub}</p>}
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500 mt-3 leading-relaxed">
+            The model will train on these {datasetStats.total.toLocaleString()} samples. Each sample is a recording of a Windows program&apos;s API call sequence from the Speakeasy sandbox.
+            More data → better generalisation. To add the 10GB QuoVadis dataset, run <code className="bg-slate-100 px-1 rounded font-mono">./scripts/download_full_dataset.sh</code>.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         {/* Config */}

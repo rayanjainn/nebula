@@ -5,7 +5,11 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   BarChart, Bar, XAxis, YAxis
 } from "recharts";
-import { Database, RefreshCw, Loader2, HelpCircle, X, Info, BookOpen } from "lucide-react";
+import { 
+  Database, RefreshCw, Loader2, HelpCircle, X, Info, BookOpen, BrainCircuit, Sparkles,
+  Search, ChevronLeft, ChevronRight, Copy, Globe, Shield, CheckCircle, Activity,
+  Layers
+} from "lucide-react";
 
 const COLORS = {
   ransomware: "#dc2626",
@@ -199,29 +203,107 @@ function ApiChip({ name }: { name: string }) {
   );
 }
 
+function SampleSummary({ row }: { row: SampleRow }) {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    if (summary) { setOpen(true); return; }
+    setLoading(true);
+    setOpen(true);
+    try {
+      const r = await api.datasetSummarize(row.top_apis, row.label, row.family);
+      setSummary(r.summary);
+    } catch {
+      setSummary("Summary unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={load}
+        className="flex items-center gap-1.5 text-[10px] bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-1 rounded font-medium transition-colors"
+        title="AI behavioral summary"
+      >
+        <Sparkles size={11} />
+        Summarize
+      </button>
+      {open && (
+        <div className="absolute right-0 top-7 z-50 w-72 bg-white rounded-xl shadow-2xl border border-slate-200 p-4 text-xs">
+          <div className="flex items-start justify-between gap-2 mb-2.5">
+            <div className="flex items-center gap-1.5">
+              <BrainCircuit size={13} className="text-indigo-500" />
+              <span className="font-semibold text-slate-800">Behavior Summary</span>
+            </div>
+            <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600 shrink-0">
+              <X size={14} />
+            </button>
+          </div>
+          {loading ? (
+            <div className="flex items-center gap-2 text-slate-400 py-2">
+              <Loader2 size={12} className="animate-spin" />
+              AI is analyzing behavior...
+            </div>
+          ) : (
+            <div className="text-slate-600 leading-relaxed space-y-2">
+              <p>{summary}</p>
+              <div className="pt-2 border-t border-slate-100 flex items-center gap-1 text-[10px] text-slate-400">
+                <Info size={10} />
+                Based on first {row.top_apis.length} API calls
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DatasetPage() {
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [samples, setSamples] = useState<SampleRow[]>([]);
-  const [labelFilter, setLabelFilter] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [samplesLoading, setSamplesLoading] = useState(false);
   const [showGlossary, setShowGlossary] = useState(false);
+  
+  // Pagination & Filtering state
+  const [page, setPage] = useState(1);
+  const [limit] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [labelFilter, setLabelFilter] = useState<number | undefined>(undefined);
+  const [familyFilter, setFamilyFilter] = useState("all");
+  const [isBalanced, setIsBalanced] = useState(false);
+  const totalPages = Math.ceil(total / limit);
 
   useEffect(() => {
     api.datasetStats().then(setStats).finally(() => setLoading(false));
-    fetchSamples();
   }, []);
 
-  async function fetchSamples(label?: number) {
+  useEffect(() => {
+    fetchSamples();
+  }, [page, labelFilter, familyFilter, search, isBalanced]);
+
+  async function fetchSamples() {
     setSamplesLoading(true);
-    const r = await api.datasetSample(12, label);
-    setSamples(r.samples);
-    setSamplesLoading(false);
+    try {
+      const r = await api.datasetSample(page, limit, labelFilter, familyFilter, search, isBalanced);
+      setSamples(r.samples);
+      setTotal(r.total);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSamplesLoading(false);
+    }
   }
 
-  function handleFilter(label: number | undefined) {
+  function handleLabelFilter(label: number | undefined) {
     setLabelFilter(label);
-    fetchSamples(label);
+    setPage(1);
   }
 
   if (loading) {
@@ -255,7 +337,7 @@ export default function DatasetPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-900">Dataset Explorer</h1>
           <p className="text-sm text-slate-500 mt-1">
-            1,561 Windows behavior traces — hover <HelpCircle size={11} className="inline text-indigo-400" /> on any term for a plain-English explanation
+            {stats?.total?.toLocaleString() || "..."} unique Windows behavior samples — hover <HelpCircle size={11} className="inline text-indigo-400" /> on any term for an explanation
           </p>
         </div>
         <button
@@ -303,24 +385,80 @@ export default function DatasetPage() {
 
       {/* Stats row */}
       {stats && (
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-3">
           {[
-            { label: "Total Samples", value: stats.total.toLocaleString(), color: "#6366f1", term: null, detail: "Total number of Windows programs analyzed" },
-            { label: "Malicious", value: stats.malicious.toLocaleString(), sub: `${stats.malicious_pct}%`, color: "#ef4444", term: "malicious", detail: "Programs identified as harmful" },
-            { label: "Benign", value: stats.benign.toLocaleString(), sub: `${(100 - stats.malicious_pct).toFixed(1)}%`, color: "#10b981", term: "benign", detail: "Programs confirmed as safe" },
-            { label: "Avg API Calls", value: stats.avg_api_calls.toString(), sub: `max: ${stats.max_api_calls}`, color: "#f59e0b", term: "api_count", detail: "Average number of Windows functions called per program" },
+            { label: "Unique Samples", value: stats.total.toLocaleString(), color: "#6366f1", term: null, detail: "Total unique Windows programs (aggregated)", icon: Database },
+            { label: "Total Records", value: stats.total_records.toLocaleString(), color: "#94a3b8", term: null, detail: "Individual behavioral traces (threads) across all samples", icon: Layers },
+            { label: "Malicious", value: stats.malicious.toLocaleString(), sub: `${stats.malicious_pct}%`, color: "#ef4444", term: "malicious", detail: "Harmful programs", icon: Shield },
+            { label: "Benign", value: stats.benign.toLocaleString(), sub: `${(100 - stats.malicious_pct).toFixed(1)}%`, color: "#10b981", term: "benign", detail: "Safe programs", icon: CheckCircle },
+            { label: "Avg APIs", value: stats.avg_api_calls.toString(), sub: `max: ${stats.max_api_calls}`, color: "#f59e0b", term: "api_count", detail: "Avg Windows functions called", icon: Activity },
           ].map((s) => (
-            <div key={s.label} className="card card-hover p-4">
-              <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+            <div key={s.label} className="card card-hover p-3.5 relative overflow-hidden group">
+              <div className="absolute -right-2 -bottom-2 opacity-5 group-hover:opacity-10 transition-opacity">
+                <s.icon size={56} />
+              </div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
                 {s.label}
                 {s.term && <TermTooltip term={s.term} context={s.detail} />}
               </div>
-              <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
-              {s.sub && <p className="text-xs text-slate-400 mt-0.5">{s.sub}</p>}
+              <p className="text-xl font-bold" style={{ color: s.color }}>{s.value}</p>
+              {s.sub && <p className="text-[10px] text-slate-400 mt-0.5 font-medium">{s.sub}</p>}
             </div>
           ))}
         </div>
       )}
+
+      {/* Search & Filters Row */}
+      <div className="card p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by hash or family..."
+              className="input-field pl-9 text-sm h-10"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              className="input-field text-xs h-10 w-32"
+              value={labelFilter === undefined ? "all" : labelFilter}
+              onChange={(e) => handleLabelFilter(e.target.value === "all" ? undefined : Number(e.target.value))}
+            >
+              <option value="all">All Labels</option>
+              <option value="1">Malicious</option>
+              <option value="0">Benign</option>
+            </select>
+            <select
+              className="input-field text-xs h-10 w-40"
+              value={familyFilter}
+              onChange={(e) => { setFamilyFilter(e.target.value); setPage(1); }}
+            >
+              <option value="all">All Families</option>
+              {Object.keys(stats?.families || {}).sort().map(f => (
+                <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="w-px h-6 bg-slate-200" />
+          <div className="flex items-center gap-2">
+             <button
+                onClick={() => setIsBalanced(!isBalanced)}
+                className={`flex items-center gap-2 px-3 h-10 rounded-lg text-xs font-medium transition-all ${
+                  isBalanced ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+             >
+                <Sparkles size={14} />
+                Balanced View
+             </button>
+             <span title="In production, benign data is much more common. This view creates a 50/50 balance for better evaluation.">
+               <HelpCircle size={14} className="text-slate-300 cursor-help" />
+             </span>
+          </div>
+        </div>
+      </div>
 
       {/* Charts row */}
       {stats && (
@@ -397,40 +535,32 @@ export default function DatasetPage() {
             <p className="text-xs text-slate-400 mt-0.5">Click blue API names to see what they do. Hover <HelpCircle size={10} className="inline text-indigo-400" /> for column explanations.</p>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
-              {([undefined, 0, 1] as const).map((l) => (
-                <button
-                  key={String(l)}
-                  className={`tab-btn text-xs py-1 ${labelFilter === l ? "active" : ""}`}
-                  onClick={() => handleFilter(l)}
-                >
-                  {l === undefined ? "All" : l === 0 ? "Benign" : "Malicious"}
-                </button>
-              ))}
-            </div>
             <button
               className="btn-secondary text-xs py-2"
-              onClick={() => fetchSamples(labelFilter)}
+              onClick={() => fetchSamples()}
               disabled={samplesLoading}
             >
               {samplesLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-              Resample
+              Refresh
             </button>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-fixed">
             <thead>
               <tr className="border-b border-slate-100">
-                <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500 w-32">
                   <span className="flex items-center gap-1">Hash <TermTooltip term="sha256" /></span>
+                </th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">
+                  <span className="flex items-center gap-1">Label</span>
                 </th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">
                   <span className="flex items-center gap-1">Family <TermTooltip term="ransomware" context="malware family type" /></span>
                 </th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">
-                  <span className="flex items-center gap-1">EP Type <TermTooltip term="ep_type" /></span>
+                  <span className="flex items-center gap-1">Threads <BrainCircuit size={11} className="text-indigo-400" /></span>
                 </th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">
                   <span className="flex items-center gap-1">APIs <TermTooltip term="api_count" /></span>
@@ -440,6 +570,7 @@ export default function DatasetPage() {
                   <span className="flex items-center gap-1">Top APIs <span className="text-indigo-400 font-normal">(click to explain)</span></span>
                 </th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">Source</th>
+                <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500 text-right">AI</th>
               </tr>
             </thead>
             <tbody>
@@ -451,30 +582,48 @@ export default function DatasetPage() {
                           <div className="skeleton h-4 w-full" />
                         </td>
                       ))}
+                      <td className="px-4 py-3">
+                         <div className="skeleton h-4 w-8 ml-auto" />
+                      </td>
                     </tr>
                   ))
                 : samples.map((row, i) => (
                     <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                      <td className="px-4 py-3 w-32">
+                        <div className="flex items-center gap-1 group">
+                          <code className="text-[10px] text-slate-400 font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 truncate max-w-[80px] block" title={row.sha256}>
+                            {row.sha256.slice(0, 10)}…
+                          </code>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(row.sha256)}
+                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-indigo-50 text-indigo-400 rounded transition-all shrink-0"
+                            title="Copy Full Hash"
+                          >
+                            <Copy size={10} />
+                          </button>
+                        </div>
+                      </td>
                       <td className="px-4 py-3">
-                        <code className="text-xs text-slate-400" title="SHA-256 hash — unique fingerprint of this file">
-                          {row.sha256.slice(0, 8)}…{row.sha256.slice(-6)}
-                        </code>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${row.label === 1 ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"}`}>
+                          {row.label === 1 ? "MALICIOUS" : "BENIGN"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <span
-                          className="badge text-[11px]"
+                          className="badge text-[11px] font-bold px-2 py-0.5 rounded-full"
                           style={{
                             background: (COLORS[row.family as keyof typeof COLORS] || "#6366f1") + "20",
                             color: COLORS[row.family as keyof typeof COLORS] || "#6366f1",
                           }}
                         >
-                          {row.family}
+                          {row.family.charAt(0).toUpperCase() + row.family.slice(1)}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600">
-                        <span title={STATIC_GLOSSARY[row.ep_type]?.detail || row.ep_type}>
-                          {row.ep_type}
-                        </span>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500 font-medium">
+                           <BrainCircuit size={12} className="text-slate-300" />
+                           {row.threads}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <span className="font-mono font-medium text-slate-800">{row.api_count}</span>
@@ -509,10 +658,101 @@ export default function DatasetPage() {
                       <td className="px-4 py-3">
                         <span className="text-[10px] text-slate-400">{row.source}</span>
                       </td>
+                      <td className="px-4 py-3 text-right">
+                        <SampleSummary row={row} />
+                      </td>
                     </tr>
                   ))}
             </tbody>
           </table>
+          
+          {/* Empty state */}
+          {!loading && samples.length === 0 && (
+            <div className="py-12 text-center">
+              <Database size={32} className="text-slate-200 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">No samples found matching your filters</p>
+              <button
+                onClick={() => { setSearch(""); setLabelFilter(undefined); setFamilyFilter("all"); }}
+                className="text-xs text-indigo-500 hover:underline mt-2"
+              >
+                Clear all filters
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Pagination Footer */}
+        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Showing <span className="font-medium text-slate-700">{(page-1)*limit + 1}</span> to{" "}
+            <span className="font-medium text-slate-700">{Math.min(page*limit, total)}</span> of{" "}
+            <span className="font-medium text-slate-700">{total.toLocaleString()}</span> samples
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              onClick={() => setPage(page - 1)}
+              disabled={page === 1}
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <div className="flex items-center gap-1 mx-2">
+               {[...Array(Math.min(5, totalPages))].map((_, i) => {
+                 let p = i + 1;
+                 if (totalPages > 5 && page > 3) p = page - 2 + i;
+                 if (p > totalPages) return null;
+                 if (p <= 0) return null;
+                 return (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                      page === p ? "bg-indigo-600 text-white shadow-md shadow-indigo-200" : "hover:bg-slate-200 text-slate-600"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                 );
+               })}
+            </div>
+            <button
+              className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              onClick={() => setPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Dataset Expansion Recommendation */}
+      <div className="card p-6 border-dashed border-2 border-slate-200 bg-slate-50/50">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-white border border-slate-100 flex items-center justify-center shrink-0 shadow-sm">
+            <Globe size={24} className="text-indigo-400" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-sm font-bold text-slate-900">Add 10GB+ of Real-World Data</h3>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              Your current local dataset ({stats?.total.toLocaleString()} samples) is a tiny subset. To achieve high detection accuracy on real-world malware, we recommend downloading the <strong>SOREL-20M</strong> or <strong>EMBER</strong> datasets. This adds approximately 10GB of behavioral traces.
+            </p>
+            <div className="flex gap-3 mt-4">
+              <a 
+                href="https://github.com/sophos-ai/SOREL-20M" 
+                target="_blank" 
+                rel="noreferrer"
+                className="flex items-center gap-1.5 text-xs text-indigo-600 bg-white border border-indigo-100 hover:bg-indigo-50 px-3 py-1.5 rounded-lg font-medium transition-colors shadow-sm"
+              >
+                <Globe size={13} />
+                Download SOREL-20M
+              </a>
+              <button className="flex items-center gap-1.5 text-xs text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg font-medium transition-colors shadow-sm">
+                <RefreshCw size={13} />
+                Run Merge Script
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

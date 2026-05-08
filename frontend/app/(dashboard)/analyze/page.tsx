@@ -65,7 +65,7 @@ const SEVERITY_COLORS = {
   low:      { bg: "#f0fdf4", border: "#bbf7d0", text: "#16a34a", badge: "#22c55e" },
 };
 
-function PlainEnglishVerdict({
+function BehavioralAnalysisCard({
   result,
 }: {
   result: PredictResult;
@@ -95,9 +95,9 @@ function PlainEnglishVerdict({
     }
   }
 
-  // Auto-load for malicious results
+  // Auto-load for all results
   useEffect(() => {
-    if (result.verdict === "MALICIOUS") load();
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
@@ -114,7 +114,7 @@ function PlainEnglishVerdict({
         </div>
         <div className="flex-1">
           <p className={`text-sm font-bold mb-1 ${isMalicious ? "text-red-700" : "text-emerald-700"}`}>
-            {isMalicious ? "⚠ This file appears to be malware" : "✓ This file appears to be safe"}
+            {isMalicious ? "⚠ Malicious Intent Detected" : "✓ Likely Benign Behavior"}
           </p>
           <p className="text-xs text-slate-500 mb-3">
             Confidence: <span className="font-semibold text-slate-700">{(result.probability * 100).toFixed(1)}%</span>
@@ -128,8 +128,11 @@ function PlainEnglishVerdict({
               Getting plain-English explanation from AI…
             </div>
           ) : explanation ? (
-            <div className="bg-white/60 rounded-lg p-3">
-              <MarkdownText>{explanation}</MarkdownText>
+            <div className="bg-white/70 rounded-xl p-4 shadow-sm border border-white/40">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Program Intent & Behavioral Summary</div>
+              <div className="text-sm text-slate-700 leading-relaxed">
+                <MarkdownText>{explanation}</MarkdownText>
+              </div>
             </div>
           ) : !loaded ? (
             <button
@@ -182,7 +185,7 @@ function BehaviorPlainCards({ behaviorMap }: { behaviorMap: Record<string, [stri
               <p className="text-[10px] text-slate-500">
                 Triggered by:{" "}
                 {tokens.map((t, i) => (
-                  <span key={t}>
+                  <span key={`${t}_${i}`}>
                     <code className="font-mono text-slate-700">{t}</code>
                     {i < tokens.length - 1 ? ", " : ""}
                   </span>
@@ -206,8 +209,9 @@ export default function AnalyzePage() {
   const [result, setResult] = useState<PredictResult | null>(null);
   const [error, setError] = useState("");
   const [showText, setShowText] = useState(false);
-  const [exampleContent, setExampleContent] = useState<string>("");
+  const [exampleData, setExampleData] = useState<Record<string, unknown> | null>(null);
   const [exampleLoading, setExampleLoading] = useState(false);
+  const [showExampleDetail, setShowExampleDetail] = useState(false);
 
   useEffect(() => {
     api.listExamples().then((r) => {
@@ -219,12 +223,13 @@ export default function AnalyzePage() {
   useEffect(() => {
     if (selectedExample && mode === "example") {
       setExampleLoading(true);
+      setExampleData(null);
       api.getExample(selectedExample)
-        .then(res => setExampleContent(JSON.stringify(res, null, 2)))
-        .catch(() => setExampleContent("Failed to load content"))
+        .then(res => setExampleData(res as Record<string, unknown>))
+        .catch(() => setExampleData(null))
         .finally(() => setExampleLoading(false));
     } else {
-      setExampleContent("");
+      setExampleData(null);
     }
   }, [selectedExample, mode]);
 
@@ -304,41 +309,68 @@ export default function AnalyzePage() {
               Real malware examples from Speakeasy emulation — select one and run the analysis
             </p>
             <div className="grid grid-cols-2 gap-2">
-              {examples.map((ex) => (
-                <button
-                  key={ex.name}
-                  onClick={() => setSelectedExample(ex.name)}
-                  className={`text-left p-3 rounded-lg border transition-all ${
-                    selectedExample === ex.name
-                      ? "border-indigo-400 bg-indigo-50"
-                      : "border-slate-200 hover:border-slate-300 hover:bg-slate-50"
-                  }`}
-                >
-                  <div className="flex items-start gap-2">
-                    <FileJson size={14} className="text-slate-400 mt-0.5 shrink-0" />
-                    <div>
-                      <p className="text-xs font-medium text-slate-800 truncate">{ex.name.replace(".json", "")}</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">
-                        {ex.entry_points} entry point{ex.entry_points !== 1 ? "s" : ""} ·{" "}
-                        {ex.sample_apis.slice(0, 2).join(", ")}
-                      </p>
+              {examples.map((ex) => {
+                const isMal = ex.verdict === "malicious";
+                const family = ex.family;
+                const shortId = ex.name.length > 16 ? ex.name.slice(0, 8) + "…" + ex.name.slice(-6) : ex.name;
+                return (
+                  <button
+                    key={ex.name}
+                    onClick={() => setSelectedExample(ex.name)}
+                    className={`text-left p-3 rounded-lg border transition-all ${
+                      selectedExample === ex.name
+                        ? "border-indigo-400 bg-indigo-50"
+                        : "border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <FileJson size={14} className="text-slate-400 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <code className="text-[10px] font-mono text-slate-600">{shortId}</code>
+                          {family && (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold capitalize ${
+                              isMal ? "bg-red-100 text-red-600" : "bg-emerald-100 text-emerald-700"
+                            }`}>{family}</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-400">
+                          {ex.entry_points} entry point{ex.entry_points !== 1 ? "s" : ""} ·{" "}
+                          {ex.sample_apis.slice(0, 2).map(a => a.replace(/^.*?\./, "")).join(", ")}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
             
             {selectedExample && (
-              <div className="mt-4 p-3 bg-slate-50 border rounded-lg">
-                <p className="text-xs font-semibold text-slate-700 mb-2">Example Contents ({selectedExample})</p>
-                {exampleLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <Loader2 size={12} className="animate-spin" /> Loading contents...
+              <div className="mt-3 border rounded-lg overflow-hidden bg-slate-50">
+                <button
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+                  onClick={() => setShowExampleDetail(!showExampleDetail)}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <FileJson size={12} className="text-indigo-400" />
+                    View example contents
+                  </span>
+                  {showExampleDetail ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
+                {showExampleDetail && (
+                  <div className="px-3 pb-3">
+                    {exampleLoading ? (
+                      <div className="flex items-center gap-2 text-xs text-slate-400 py-2">
+                        <Loader2 size={12} className="animate-spin" /> Loading…
+                      </div>
+                    ) : exampleData ? (
+                      <pre className="mt-1 text-[10px] font-mono text-slate-600 bg-white border border-slate-200 rounded p-2 overflow-auto max-h-72 whitespace-pre">
+                        {JSON.stringify(exampleData, null, 2)}
+                      </pre>
+                    ) : (
+                      <p className="text-xs text-slate-400 py-2">Failed to load example data.</p>
+                    )}
                   </div>
-                ) : (
-                  <pre className="text-[10px] font-mono text-slate-600 bg-white p-2 border rounded overflow-y-auto max-h-64">
-                    {exampleContent}
-                  </pre>
                 )}
               </div>
             )}
@@ -469,8 +501,8 @@ export default function AnalyzePage() {
             )}
           </div>
 
-          {/* Plain-English verdict explanation */}
-          <PlainEnglishVerdict result={result} />
+          {/* AI Behavioral Analysis */}
+          <BehavioralAnalysisCard result={result} />
 
           {/* XAI results */}
           {result.xai && (

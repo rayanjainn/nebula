@@ -2,6 +2,7 @@
 Nebula Enhanced — FastAPI Backend
 Endpoints: /predict, /analyze, /explain, /train, /metrics, /dataset, /report
 """
+import re
 import sys
 import json
 import time
@@ -46,9 +47,33 @@ def get_model_and_tokenizer():
         ckpt_dir = ROOT / "models" / "checkpoints"
         best_ckpt = ckpt_dir / "nebula_run_best.pt"
         if best_ckpt.exists():
-            ckpt = torch.load(str(best_ckpt), map_location="cpu")
-            _model.load_state_dict(ckpt["model_state_dict"])
-            log.info(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}")
+            ckpt = torch.load(str(best_ckpt), map_location="cpu", weights_only=False)
+            state = ckpt["model_state_dict"]
+            # Remap compact Kaggle attribute names → full NebulaEnhanced names
+            _REMAP = {
+                "cls":        "cls_token",
+                "emb.":       "embedding.",
+                "pe.pe":      "pos_encoder.pe",
+                "pe.drop.":   "pos_encoder.dropout.",
+                "chunks.":    "span_attn_layers.",
+                ".enc.":      ".encoder.",
+                "clf.":       "classifier.",
+            }
+            remapped = {}
+            for k, v in state.items():
+                new_k = k
+                for old, new in _REMAP.items():
+                    new_k = new_k.replace(old, new)
+                remapped[new_k] = v
+            # Drop pos_encoder.pe — it's a fixed sinusoidal buffer recomputed at
+            # init; a 1-position size diff between Kaggle (seq+10) and local (seq+11)
+            # would block load_state_dict even with strict=False.
+            remapped.pop("pos_encoder.pe", None)
+            missing, unexpected = _model.load_state_dict(remapped, strict=False)
+            real_issues = [k for k in missing + unexpected if "pos_encoder.pe" not in k]
+            if real_issues:
+                log.warning(f"Checkpoint key mismatches: {real_issues}")
+            log.info(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')} (AUC {ckpt.get('auc', '?')})")
 
         _model.eval()
     return _model, _tokenizer
@@ -145,7 +170,7 @@ def _run_xai(input_ids: torch.Tensor, _prob: float = 0.0) -> Dict:
     try:
         from xai.explainer import explain_sample
         model, tok = get_model_and_tokenizer()
-        result = explain_sample(model, input_ids, tok, device="cpu", use_ig=False)
+        result = explain_sample(model, input_ids, tok, device="cpu", use_ig=True)
         return {
             "top_tokens": [(t, float(s)) for t, s in result["top_tokens"]],
             "behavior_map": {
@@ -235,10 +260,21 @@ def predict(req: PredictRequest):
 
 @app.post("/predict/text")
 def predict_text(req: TextPredictRequest):
-    """Predict from raw text (pre-processed API sequence string)."""
+    """Predict from raw text or space-separated API names."""
     try:
         from config import MODEL_CONFIG
-        input_ids = _tokenize(req.text, MODEL_CONFIG["seq_len"])
+        from pipeline.preprocessor import SpeakeasyPreprocessor
+        text = req.text.strip()
+        tokens = text.split()
+        # If input looks like a list of API names (short, identifier-like tokens),
+        # wrap it in a synthetic report and run through the same preprocessor used during training.
+        if len(tokens) <= 300 and all(re.match(r'^[A-Za-z][A-Za-z0-9_.]*$', t) for t in tokens if t):
+            pp = SpeakeasyPreprocessor()
+            synthetic_row = {
+                "apis": [{"api_name": t, "args": [], "ret_val": 0} for t in tokens],
+            }
+            text = pp.process_row(synthetic_row)
+        input_ids = _tokenize(text, MODEL_CONFIG["seq_len"])
         prob = _run_inference(input_ids)
         verdict = "MALICIOUS" if prob > 0.5 else "BENIGN"
 
@@ -374,21 +410,31 @@ def llm_compare(req: CompareRequest):
 def dataset_stats():
     """Stats about the merged dataset."""
     merged = ROOT / "data" / "merged_dataset.jsonl"
+    
     if not merged.exists():
         raise HTTPException(404, "Dataset not found")
 
-    rows = []
+    all_rows = []
     with open(merged) as f:
-        for line in f:
-            rows.append(json.loads(line))
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            # Assign a stable display hash: real sha256 > apihash > row-index stub
+            if not r.get("sha256"):
+                ah = r.get("apihash", "")
+                r["sha256"] = ah if (ah and ah != "unknown") else f"row_{i:06d}"
+            all_rows.append(r)
 
-    total = len(rows)
-    malicious = sum(1 for r in rows if r.get("label", 0) == 1)
+    total_records = len(all_rows)
+    total = total_records
+    malicious = sum(1 for r in all_rows if r.get("label", 0) == 1)
     families: Dict[str, int] = {}
     sources: Dict[str, int] = {}
     api_lens = []
 
-    for r in rows:
+    for r in all_rows:
         fam = r.get("family", "unknown")
         families[fam] = families.get(fam, 0) + 1
         src = r.get("source", "unknown")
@@ -396,47 +442,92 @@ def dataset_stats():
         apis = r.get("apis") or []
         api_lens.append(len(apis))
 
+    full_path = ROOT / "data" / "full" / "speakeasy_train_full.jsonl"
     return {
         "total": total,
+        "total_records": total_records,
         "malicious": malicious,
         "benign": total - malicious,
-        "malicious_pct": round(malicious / total * 100, 1),
+        "malicious_pct": round(malicious / total * 100, 1) if total > 0 else 0,
         "families": families,
         "sources": sources,
         "avg_api_calls": round(float(np.mean(api_lens)), 1) if api_lens else 0,
         "max_api_calls": max(api_lens) if api_lens else 0,
+        "full_dataset_found": full_path.exists()
     }
 
 
 @app.get("/dataset/sample")
-def dataset_sample(n: int = 5, label: Optional[int] = None):
-    """Return n sample rows from dataset."""
+def dataset_sample(
+    page: int = 1,
+    limit: int = 10,
+    label: Optional[int] = None,
+    family: Optional[str] = None,
+    search: Optional[str] = None,
+    balanced: bool = False
+):
+    """Return paginated samples with search and filtering."""
     merged = ROOT / "data" / "merged_dataset.jsonl"
-    rows = []
-    with open(merged) as f:
-        for line in f:
-            d = json.loads(line)
-            if label is None or d.get("label") == label:
-                rows.append(d)
+    if not merged.exists():
+        return {"samples": [], "total": 0}
 
-    import random
-    sample = random.sample(rows, min(n, len(rows)))
+    all_rows = []
+    with open(merged) as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            # Stable display hash
+            if not d.get("sha256"):
+                ah = d.get("apihash", "")
+                d["sha256"] = ah if (ah and ah != "unknown") else f"row_{i:06d}"
+
+            if label is not None and d.get("label") != label:
+                continue
+            if family and family.lower() != "all" and d.get("family", "").lower() != family.lower():
+                continue
+            if search:
+                s = search.lower()
+                if s not in d["sha256"].lower() and s not in d.get("family", "").lower():
+                    continue
+            all_rows.append(d)
+
+    rows = all_rows
+    
+    if balanced:
+        malicious_pool = [r for r in rows if r.get("label") == 1]
+        benign_pool = [r for r in rows if r.get("label") == 0]
+        count = min(len(malicious_pool), len(benign_pool))
+        # Keep it deterministic for pagination
+        rows = malicious_pool[:count] + benign_pool[:count]
+        
+    total = len(rows)
+    
+    # Sort malicious first
+    rows.sort(key=lambda x: x.get("label", 0), reverse=True)
+    
+    start = (page - 1) * limit
+    end = start + limit
+    sample_page = rows[start:end]
+    
     result = []
-    for r in sample:
+    for r in sample_page:
         apis = r.get("apis") or []
-        api_names = [a.get("api_name", str(a)) if isinstance(a, dict) else str(a) for a in apis[:10]]
+        api_names = [a.get("api_name", str(a)) if isinstance(a, dict) else str(a) for a in apis[:20]]
         result.append({
-            "sha256": r.get("sha256", r.get("apihash", "unknown"))[:16] + "...",
+            "sha256": r.get("sha256", r.get("apihash", "unknown")),
             "label": r.get("label", 0),
             "family": r.get("family", "unknown"),
-            "ep_type": r.get("ep_type", "unknown"),
+            "threads": r.get("threads", 1),
             "api_count": len(apis),
             "top_apis": api_names,
             "has_network": len(r.get("network_events") or []) > 0,
             "has_files": len(r.get("file_access") or []) > 0,
             "source": r.get("source", "unknown"),
         })
-    return {"samples": result, "total_available": len(rows)}
+    
+    return {"samples": result, "total": total, "page": page, "limit": limit}
 
 
 @app.post("/train/start")
@@ -461,17 +552,15 @@ def _run_training(req: TrainRequest):
         from config import MODEL_CONFIG
         from models.nebula_enhanced import NebulaEnhanced
         from pipeline.tokenizer_utils import load_tokenizer
-        from pipeline.dataset import load_jsonl_split, build_dataloaders
+        from pipeline.dataset import load_jsonl_split
         from pipeline.trainer import NebulaTrainer
 
         tokenizer = load_tokenizer("bpe", MODEL_CONFIG["seq_len"])
         merged = ROOT / "data" / "merged_dataset.jsonl"
 
-        (X_train, y_train), (X_val, y_val) = load_jsonl_split(
-            str(merged), tokenizer, seq_len=MODEL_CONFIG["seq_len"], val_ratio=0.2
-        )
-        train_loader, val_loader = build_dataloaders(
-            X_train, y_train, X_val, y_val, batch_size=req.batch_size
+        train_loader, val_loader, _, _ = load_jsonl_split(
+            str(merged), tokenizer, seq_len=MODEL_CONFIG["seq_len"], val_ratio=0.2,
+            balance=True, max_per_class=9000,
         )
 
         model = NebulaEnhanced(**MODEL_CONFIG)
@@ -522,71 +611,135 @@ def train_status():
 
 @app.get("/metrics")
 def get_metrics():
-    """Return latest training metrics from checkpoint."""
-    ckpt_dir = ROOT / "models" / "checkpoints"
-    best_ckpt = ckpt_dir / "nebula_run_best.pt"
+    """Return latest training metrics — prefers training_results.json, falls back to checkpoint."""
+    results_path = ROOT / "data" / "training_results.json"
+    if results_path.exists():
+        with open(results_path) as f:
+            r = json.load(f)
+        e = r.get("enhanced", {})
+        p = r.get("paper_baseline", {})
+        return {
+            "epoch": r.get("best_epoch", ckpt_epoch(ROOT)),
+            "auc":           e.get("auc", 0),
+            "f1":            e.get("f1", 0),
+            "accuracy":      e.get("accuracy", 0),
+            "precision":     e.get("precision", 0),
+            "recall":        e.get("recall", 0),
+            "tpr_at_fpr1e3": e.get("tpr_at_fpr1e3", 0),
+            "average_precision": e.get("average_precision", 0),
+            "confusion_matrix":  e.get("confusion_matrix"),
+            "parameters":    e.get("parameters", 0),
+            "baseline": {
+                "auc":           p.get("auc", 0),
+                "f1":            p.get("f1", 0),
+                "accuracy":      p.get("accuracy", 0),
+                "precision":     p.get("precision", 0),
+                "recall":        p.get("recall", 0),
+                "tpr_at_fpr1e3": p.get("tpr_at_fpr1e3", 0),
+                "parameters":    p.get("parameters", 0),
+            },
+        }
 
+    # fallback: read directly from checkpoint
+    best_ckpt = ROOT / "models" / "checkpoints" / "nebula_run_best.pt"
     if not best_ckpt.exists():
         return {"status": "no_checkpoint", "message": "Model not yet trained"}
-
-    ckpt = torch.load(str(best_ckpt), map_location="cpu")
-    metrics = ckpt.get("metrics", {})
+    ckpt = torch.load(str(best_ckpt), map_location="cpu", weights_only=False)
     return {
         "epoch": ckpt.get("epoch", 0),
-        "auc": round(metrics.get("auc", 0), 4),
-        "f1": round(metrics.get("f1", 0), 4),
-        "accuracy": round(metrics.get("acc", 0), 4),
-        "tpr_at_fpr1e3": round(metrics.get("tpr_at_fpr1e3", 0), 4),
-        "loss": round(metrics.get("loss", 0), 4),
+        "auc":   round(float(ckpt.get("auc", 0)), 4),
+        "f1":    round(float(ckpt.get("f1", 0)), 4),
     }
+
+
+def ckpt_epoch(root: Path) -> int:
+    p = root / "models" / "checkpoints" / "nebula_run_best.pt"
+    if not p.exists():
+        return 0
+    try:
+        ckpt = torch.load(str(p), map_location="cpu", weights_only=False)
+        return int(ckpt.get("epoch", 0))
+    except Exception:
+        return 0
+
+
+def _load_examples_index() -> Dict[str, Dict]:
+    """Load speakeasy_examples.jsonl and group rows by SHA-256 into per-sample dicts."""
+    examples_file = ROOT / "data" / "speakeasy_examples.jsonl"
+    if not examples_file.exists():
+        return {}
+    by_sha: Dict[str, Dict] = {}
+    with open(examples_file) as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            sha = r.get("sha256") or r.get("apihash") or ""
+            if not sha or sha in ("unknown", ""):
+                sha = f"row_{i:06d}"
+            if sha not in by_sha:
+                family = r.get("family", "unknown")
+                label = r.get("label", -1)
+                by_sha[sha] = {
+                    "sha256": sha,
+                    "family": family,
+                    "label": label,
+                    "entry_points": [],
+                }
+            ep_entry = {
+                "ep_type": r.get("ep_type", ""),
+                "apis": r.get("apis") or [],
+            }
+            by_sha[sha]["entry_points"].append(ep_entry)
+    return by_sha
 
 
 @app.get("/examples")
 def list_examples():
     """Return list of built-in example reports for demo."""
-    emulation_dir = ROOT.parent / "nebula" / "emulation"
+    index = _load_examples_index()
     examples = []
-    for f in emulation_dir.glob("*.json"):
-        if f.name == "speakeasy_config.json":
-            continue
-        try:
-            with open(f) as fh:
-                data = json.load(fh)
-            eps = data.get("entry_points", [data]) if isinstance(data, dict) else data
-            apis = []
-            for ep in eps[:1]:
-                apis = [a.get("api_name", "") for a in (ep.get("apis") or [])[:5] if isinstance(a, dict)]
-            examples.append({
-                "name": f.name,
-                "sha256": data.get("sha256", "example")[:16] + "..." if isinstance(data, dict) and data.get("sha256") else "example",
-                "entry_points": len(eps),
-                "sample_apis": apis,
-            })
-        except:
-            pass
+    for sha, data in index.items():
+        eps = data["entry_points"]
+        apis = []
+        for ep in eps[:1]:
+            apis = [a.get("api_name", "") for a in (ep.get("apis") or [])[:5] if isinstance(a, dict)]
+        family = data.get("family", "unknown")
+        label = data.get("label", -1)
+        verdict = "malicious" if label == 1 else "benign"
+        examples.append({
+            "name": sha,
+            "sha256": sha[:16] + "..." if len(sha) > 16 else sha,
+            "entry_points": len(eps),
+            "sample_apis": apis,
+            "family": family,
+            "verdict": verdict,
+        })
+    # Sort: malicious first, then by family
+    examples.sort(key=lambda x: (x["verdict"] == "benign", x["family"]))
     return {"examples": examples}
 
 
 @app.get("/examples/{name}")
 def get_example(name: str):
-    """Return a specific example report."""
-    emulation_dir = ROOT.parent / "nebula" / "emulation"
-    fpath = emulation_dir / name
-    if not fpath.exists() or not fpath.suffix == ".json":
+    """Return a specific example report by SHA-256 key."""
+    index = _load_examples_index()
+    if name not in index:
         raise HTTPException(404, f"Example {name} not found")
-    with open(fpath) as f:
-        return json.load(f)
+    return index[name]
 
 
 @app.post("/predict/example/{name}")
 def predict_example(name: str, use_xai: bool = True, use_llm: bool = False):
     """Run prediction on a built-in example report."""
-    emulation_dir = ROOT.parent / "nebula" / "emulation"
-    fpath = emulation_dir / name
-    if not fpath.exists():
+    index = _load_examples_index()
+    if name not in index:
         raise HTTPException(404, f"Example {name} not found")
-    with open(fpath) as f:
-        report = json.load(f)
+    report = index[name]
 
     try:
         from config import MODEL_CONFIG
@@ -629,7 +782,28 @@ def get_training_results():
     if not path.exists():
         raise HTTPException(404, "No training results found. Run scripts/train_and_evaluate.py first.")
     with open(path) as f:
-        return json.load(f)
+        result = json.load(f)
+    # Overlay live training history if a dashboard run has more epochs
+    live = _training_status
+    if live.get("val_auc") and len(live["val_auc"]) > 0:
+        live_history = {
+            "train_loss": live["train_loss"],
+            "val_auc": live["val_auc"],
+            "val_f1": live["val_f1"],
+            "val_tpr_at_fpr1e3": live["val_tpr"],
+            "val_acc": [],
+            "epoch_times": [],
+        }
+        result["live_training"] = {
+            "running": live["running"],
+            "epoch": live["epoch"],
+            "epochs": live["epochs"],
+            "done": live["done"],
+            "train_history": live_history,
+            "latest_auc": live["val_auc"][-1],
+            "latest_f1": live["val_f1"][-1],
+        }
+    return result
 
 
 class ExplainTermRequest(BaseModel):
@@ -701,3 +875,38 @@ async def explain_verdict(req: dict):
 
     explanation = client.chat(messages, temperature=0.2, max_tokens=300)
     return {"verdict": verdict, "explanation": explanation}
+
+
+class SummarizeRequest(BaseModel):
+    apis: List[str]
+    label: Optional[int] = None
+    family: Optional[str] = None
+
+@app.post("/dataset/summarize")
+async def summarize_sample(req: SummarizeRequest):
+    """
+    Use the LLM to provide a behavioral summary of a dataset sample.
+    """
+    from llm.analyzer import OllamaClient
+    client = OllamaClient()
+
+    api_seq = ", ".join(req.apis[:50])
+    label_str = "Malicious" if req.label == 1 else "Benign"
+    family_str = f" (Family: {req.family})" if req.family and req.family != "unknown" else ""
+
+    prompt = (
+        f"Analyze the following sequence of Windows API calls from a program labeled as {label_str}{family_str}:\n\n"
+        f"API Sequence: {api_seq}\n\n"
+        f"Describe in 3-4 sentences of plain English what this program is doing. "
+        f"Explain its behavior and intent. If it's malicious, say why. If it's benign, explain what legitimate "
+        f"task it seems to be performing (e.g., managing files, connecting to a server, UI tasks). "
+        f"Do not use unexplained jargon."
+    )
+
+    messages = [
+        {"role": "system", "content": "You provide clear, plain-English summaries of computer program behavior based on API call sequences."},
+        {"role": "user", "content": prompt},
+    ]
+
+    summary = client.chat(messages, temperature=0.2, max_tokens=350)
+    return {"summary": summary}
