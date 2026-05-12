@@ -108,11 +108,11 @@ Step 200+  (cosine):     lr decreases following a cosine curve
 
 ## Epochs — How Many Times Do We Train?
 
-One **epoch** = one complete pass through all 1,248 training samples.
+One **epoch** = one complete pass through all 12,721 training samples.
 
-We train for **10 epochs** with a **15-minute time budget**.
+We train until validation AUC plateaus; the best checkpoint was reached at **epoch 27**.
 
-After each epoch, we evaluate on the validation set (313 samples the model has never seen). We track:
+After each epoch, we evaluate on the validation set (3,181 samples the model has never seen). We track:
 - Validation AUC (main metric for checkpoint saving)
 - Validation F1
 - Validation accuracy
@@ -144,15 +144,20 @@ The **best checkpoint** (epoch with highest validation AUC) is saved to disk. If
 - Weight decay (0.01) — pushes weights toward zero
 - Label smoothing (0.05) — prevents overconfidence
 - Early stopping — save best checkpoint and stop if no improvement
-- Limited model size — only 3.4M parameters for 1,248 samples
+- Controlled model size — 7.2M parameters for 12,721 training samples
 
 ---
 
-## Training on Apple M1 (MPS)
+## Training Hardware
 
-The model trains on **MPS** (Metal Performance Shaders) — Apple's GPU acceleration framework available on M1/M2/M3 chips. This is automatically selected if available, falling back to CPU otherwise.
+The model automatically selects the best available device: **CUDA GPU** → **Apple M1/M2 MPS** → CPU.
 
-Both models (NebulaEnhanced + NebulaPaper baseline) train in approximately **3.4 minutes combined** on M1. On a CUDA GPU it would be faster.
+Training times for the full run (best checkpoint at epoch 27):
+
+| Model | Device | Training Time |
+|---|---|---|
+| NebulaEnhanced | CUDA | ~14.7 minutes |
+| NebulaPaper baseline | CUDA | ~21.8 minutes |
 
 ---
 
@@ -177,13 +182,16 @@ The checkpoint file (`.pt`) is a PyTorch file containing:
 
 | Metric | NebulaEnhanced | Paper Baseline |
 |---|---|---|
-| AUC-ROC | **0.9873** | 0.9848 |
-| F1 Score | **0.9670** | 0.9628 |
-| Accuracy | **94.57%** | 93.93% |
-| Precision | **0.9960** | — |
-| Recall | **0.9396** | — |
-| TPR @ FPR=10⁻³ | **0.9396** | 0.9396 |
-| Training time | ~1.7 min | ~1.7 min |
+| AUC-ROC | **0.9892** | 0.9860 |
+| F1 Score | **0.9570** | 0.9412 |
+| Accuracy | **95.41%** | 93.78% |
+| Precision | **0.9531** | 0.9446 |
+| Recall | **0.9610** | 0.9379 |
+| Average Precision | **0.9914** | 0.9886 |
+| TPR @ FPR=10⁻³ | 0.4252 | **0.5464** |
+| Best epoch | 27 | — |
+| Training time (CUDA) | ~14.7 min | ~21.8 min |
+| Parameters | **7.22M** | 7.02M |
 
 See [07_evaluation_metrics.md](07_evaluation_metrics.md) for a complete explanation of every metric.
 

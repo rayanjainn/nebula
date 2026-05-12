@@ -2,15 +2,15 @@
 
 ## Where Does Our Data Come From?
 
-This project uses **1,561 behavior traces** — records of Windows programs being run inside Speakeasy and having their actions logged. Each trace represents one program (or one entry point of a program).
+This project uses **15,902 behavior traces** — records of Windows programs being run inside Speakeasy and having their actions logged. Each trace represents one program (or one entry point of a program).
 
-### Source 1: HuggingFace Dataset (1,452 samples)
+### Source 1: HuggingFace Dataset (~15,793 samples)
 A public research dataset called `dtrizna/speakeasy_trainset` on HuggingFace, a platform where researchers share machine learning datasets. This dataset was created specifically for malware research and contains behavior traces from both malware and benign programs that were analyzed using Speakeasy.
 
-### Source 2: Speakeasy Example Reports (109 samples)
+### Source 2: Speakeasy Example Reports (~109 samples)
 The Speakeasy tool comes with example malware reports for testing and demonstration. These are real malware samples (ransomware, trojans, RATs) that Speakeasy's developers included as examples. We extracted these and added them to the dataset.
 
-**Together these form: `data/merged_dataset.jsonl`** — 1,561 lines, one JSON object per line.
+**Together these form: `data/merged_dataset.jsonl`** — 15,902 lines, one JSON object per line.
 
 ---
 
@@ -34,32 +34,19 @@ Each line of `merged_dataset.jsonl` is a JSON object. Here is what the fields me
 
 | Category | Count | Percentage |
 |---|---|---|
-| **Malicious samples** | 1,323 | 84.8% |
-| Benign samples | 238 | 15.2% |
-| **Total** | **1,561** | 100% |
+| **Malicious samples** | ~8,460 | 53.2% |
+| Benign samples | ~7,442 | 46.8% |
+| **Total** | **15,902** | 100% |
 
-**Malware families in the dataset:**
-
-| Family | Count | What It Does |
-|---|---|---|
-| Trojan | 1,217 | General malware disguised as legitimate software |
-| Ransomware | 102 | Encrypts your files and demands payment |
-| Benign | 238 | Safe programs included for comparison |
-| RAT | 3 | Remote access trojan — attacker controls your PC |
-| Backdoor | 1 | Hidden entry point for attackers |
-
-The dataset is **imbalanced** — mostly malware, less benign. This is realistic: in the real world, security researchers collect far more malware samples than benign ones. Our model accounts for this.
+The dataset is **near-balanced** — roughly equal representation of malicious and benign samples. This is an improvement over prior imbalanced versions and produces better-calibrated probability estimates.
 
 ---
 
-## Why 84.8% Malware?
+## Dataset Balance
 
-This feels unbalanced because it is. But it reflects reality:
-- Malware researchers actively hunt for and collect malicious samples
-- Benign Windows programs are less interesting to collect for a research dataset
-- The model learns to handle this imbalance through training techniques (label smoothing, careful metric selection)
+At 53.2% malicious, the dataset is close to balanced. This makes training more straightforward — the model gets roughly equal exposure to both classes, leading to better calibrated confidence scores. Label smoothing (ε=0.05) still helps prevent overconfidence even in the balanced setting.
 
-The key metric we use — **TPR at FPR=0.1%** — specifically measures performance under realistic conditions where the cost of false alarms (falsely accusing benign software) is very high.
+The key evaluation metric — **TPR at FPR=0.1%** — measures performance under strict precision requirements relevant to enterprise deployment, where even rare false alarms are costly.
 
 ---
 
@@ -135,14 +122,14 @@ This string is exactly what gets fed to the tokenizer.
 
 ## Train / Validation Split
 
-We split the 1,561 samples into:
+We split the 15,902 samples into:
 
 | Split | Samples | Malicious | Benign |
 |---|---|---|---|
-| **Training set** (80%) | 1,248 | 1,058 | 190 |
-| **Validation set** (20%) | 313 | 265 | 48 |
+| **Training set** (80%) | 12,721 | 6,762 | ~5,959 |
+| **Validation set** (20%) | 3,181 | 1,691 | ~1,490 |
 
-**"Stratified" split** means the 85%/15% malicious/benign ratio is preserved in both splits. This prevents the model from accidentally being trained on mostly one type and tested on another.
+**"Stratified" split** means the ~53%/47% malicious/benign ratio is preserved in both splits. This prevents the model from accidentally being trained on mostly one type and tested on another.
 
 The model **only sees the training set during training**. The validation set is held completely aside and used only to measure how well the model performs on data it has never seen before. This gives us honest accuracy numbers.
 

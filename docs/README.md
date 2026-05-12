@@ -10,7 +10,7 @@ Complete guide to the Dynamic Malware Analysis Platform — written for someone 
 |---|---|---|
 | [01](01_what_is_malware.md) | **What Is Malware?** | Types of malware (ransomware, trojans, RATs, backdoors), why signatures fail, key terms |
 | [02](02_dynamic_analysis.md) | **Dynamic Analysis & Windows Emulation** | What the Windows API is, why it matters for detection, what Speakeasy does, SHA-256 hashes explained |
-| [03](03_data_and_preprocessing.md) | **The Data** | Where our 1,561 samples come from, what each field means, how raw JSON becomes model input |
+| [03](03_data_and_preprocessing.md) | **The Data** | Where our 15,902 samples come from, what each field means, how raw JSON becomes model input |
 | [04](04_tokenization_and_bpe.md) | **Tokenization & BPE** | How text becomes numbers, what Byte-Pair Encoding is, why 50,000 vocab and 512 length |
 | [05](05_transformer_architecture.md) | **The Neural Network Architecture** | What a Transformer is, how attention works, chunked attention, CLS token, the full model diagram |
 | [06](06_training.md) | **Training the Model** | How the model learns, loss functions, AdamW optimizer, learning rate schedule, results |
@@ -40,4 +40,4 @@ Every document ends with a glossary. Key terms across the entire project:
 
 ## The System in One Paragraph
 
-This platform takes a suspicious Windows program, runs it inside a safe simulation (Speakeasy), records every Windows API call it makes, converts those calls into a sequence of tokens (via BPE tokenization), and feeds that sequence into a custom Transformer neural network. The network was trained on 1,561 labeled examples (84.8% malware) to predict whether a program is malicious. It achieves AUC=0.987 and detects 94% of malware at an enterprise-grade false positive rate of 0.1%. When a file is flagged, the platform explains *which specific API calls* drove the decision (XAI), maps them to the MITRE ATT&CK framework, and optionally queries the gemma3:27b language model to generate a plain-English threat intelligence report.
+This platform takes a suspicious Windows program, runs it inside a safe simulation (Speakeasy), records every Windows API call it makes, converts those calls into a sequence of tokens (via BPE tokenization), and feeds that sequence into a custom Transformer neural network. The network was trained on 15,902 labeled examples (~53% malware) to predict whether a program is malicious. It achieves AUC=0.9892, F1=0.957, and detects 96% of malware at threshold=0.5. When a file is flagged, the platform explains *which specific API calls* drove the decision (XAI), maps them to the MITRE ATT&CK framework, and optionally queries the gemma3:27b language model to generate a plain-English threat intelligence report.

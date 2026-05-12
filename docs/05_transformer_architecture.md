@@ -126,13 +126,13 @@ This project uses **Pre-LayerNorm** (normalize before the sub-layer, rather than
          │
          ▼
 ┌─────────────────────────┐
-│  Token Embedding        │  512 tokens × 64 dimensions
+│  Token Embedding        │  512 tokens × 128 dimensions
 │  (50,000-word vocab)    │
 └─────────┬───────────────┘
           │
           ▼
 ┌─────────────────────────┐
-│  Prepend CLS token      │  513 tokens × 64 dimensions
+│  Prepend CLS token      │  513 tokens × 128 dimensions
 └─────────┬───────────────┘
           │
           ▼
@@ -144,7 +144,7 @@ This project uses **Pre-LayerNorm** (normalize before the sub-layer, rather than
           ▼ (tokens 1-512 only)
 ┌─────────────────────────┐
 │  Chunked Attention ×1   │  8 chunks of 64 tokens
-│  (8 heads, 64-dim)      │  32,768 attention pairs
+│  (8 heads, 128-dim)     │  32,768 attention pairs
 │  + Feed-Forward         │
 │  + LayerNorm            │
 └─────────┬───────────────┘
@@ -152,6 +152,13 @@ This project uses **Pre-LayerNorm** (normalize before the sub-layer, rather than
           ▼
 ┌─────────────────────────┐
 │  Chunked Attention ×2   │  Second layer of chunked attention
+│  + Feed-Forward         │
+│  + LayerNorm            │
+└─────────┬───────────────┘
+          │
+          ▼
+┌─────────────────────────┐
+│  Chunked Attention ×3   │  Third layer of chunked attention
 │  + Feed-Forward         │
 │  + LayerNorm            │
 └─────────┬───────────────┘
@@ -172,10 +179,10 @@ This project uses **Pre-LayerNorm** (normalize before the sub-layer, rather than
           ▼
 ┌─────────────────────────┐
 │  Classifier Head        │
-│  Linear(64 → 64)        │
+│  Linear(128 → 64)       │
 │  LayerNorm              │
 │  GELU activation        │
-│  Dropout(0.3)           │
+│  Dropout(0.1)           │
 │  Linear(64 → 1)         │
 └─────────┬───────────────┘
           │
@@ -206,14 +213,14 @@ During inference (when you actually analyze a sample), dropout is turned off and
 
 | Component | Parameters |
 |---|---|
-| Token embedding (50,000 × 64) | 3,200,000 |
-| CLS token | 64 |
-| 2× Chunked attention layers | ~133,000 |
-| Global attention layer | ~66,000 |
+| Token embedding (50,000 × 128) | 6,400,000 |
+| CLS token | 128 |
+| 3× Chunked attention layers | ~591,000 |
+| Global attention layer | ~197,000 |
 | Classifier head | ~8,000 |
-| **Total** | **~3,400,000** |
+| **Total** | **~7,200,000** |
 
-3.4 million parameters might sound large, but modern language models have billions. Our model is deliberately small — it needs to run quickly on a server that might process hundreds of files per minute.
+7.2 million parameters is still very lean — modern language models have billions. The model runs quickly on a server that processes hundreds of files per minute.
 
 ---
 
@@ -237,4 +244,4 @@ During inference (when you actually analyze a sample), dropout is turned off and
 | Parameters | The learned numbers (weights) inside the model |
 | Sigmoid | A function that squashes any number to the range [0, 1] |
 | Logit | The raw output before sigmoid — can be any number |
-| Embedding | A 64-dimensional vector representation of a token |
+| Embedding | A 128-dimensional vector representation of a token |

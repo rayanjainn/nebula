@@ -27,36 +27,36 @@ Before any metric, we need the **confusion matrix**. It shows the four possible 
 **Our results** (validation set, threshold = 0.5):
 ```
               Predicted BENIGN    Predicted MALICIOUS
-Actually BENIGN      47                 1
-Actually MALICIOUS   16               249
+Actually BENIGN    1,410                80
+Actually MALICIOUS    66             1,625
 ```
 
-- **TN = 47**: 47 benign files correctly cleared. No wasted analyst time.
-- **FP = 1**: 1 benign file falsely accused. One unnecessary investigation.
-- **FN = 16**: 16 malware samples missed. These are the dangerous ones — they get through.
-- **TP = 249**: 249 malware samples correctly detected and flagged.
+- **TN = 1,410**: 1,410 benign files correctly cleared. No wasted analyst time.
+- **FP = 80**: 80 benign files falsely accused. Unnecessary investigations.
+- **FN = 66**: 66 malware samples missed. These are the dangerous ones — they get through.
+- **TP = 1,625**: 1,625 malware samples correctly detected and flagged.
 
 ---
 
 ## Accuracy
 
 **Formula**: (TP + TN) / Total  
-**Our result**: (249 + 47) / 313 = **94.57%**
+**Our result**: (1,625 + 1,410) / 3,181 = **95.41%**
 
 The percentage of all samples that were correctly classified.
 
-**Limitation**: does not distinguish between different types of errors. Missing malware (FN=16) and falsely flagging benign (FP=1) are both counted as wrong, but they have very different real-world consequences.
+**Limitation**: does not distinguish between different types of errors. Missing malware (FN=66) and falsely flagging benign (FP=80) are both counted as wrong, but they have very different real-world consequences.
 
 ---
 
 ## Precision
 
 **Formula**: TP / (TP + FP)  
-**Our result**: 249 / (249 + 1) = **99.60%**
+**Our result**: 1,625 / (1,625 + 80) = **95.31%**
 
 "Of all the files the model flagged as malicious, what percentage actually were malicious?"
 
-**In plain English**: When our system sounds the alarm, it is right 99.6% of the time. An analyst who investigates every alert will waste time on a false alarm only 0.4% of the time.
+**In plain English**: When our system sounds the alarm, it is right 95.3% of the time. An analyst who investigates every alert will encounter a false alarm about 4.7% of the time.
 
 High precision → few false alarms → analysts trust the system.
 
@@ -65,11 +65,11 @@ High precision → few false alarms → analysts trust the system.
 ## Recall (Sensitivity / True Positive Rate)
 
 **Formula**: TP / (TP + FN)  
-**Our result**: 249 / (249 + 16) = **93.96%**
+**Our result**: 1,625 / (1,625 + 66) = **96.10%**
 
 "Of all the actual malware in the dataset, what percentage did the model catch?"
 
-**In plain English**: The model detects 94% of all malware that passes through it. 6% slips through.
+**In plain English**: The model detects 96.1% of all malware that passes through it. Only ~4% slips through.
 
 High recall → fewer missed threats → better protection.
 
@@ -78,7 +78,7 @@ High recall → fewer missed threats → better protection.
 ## F1 Score
 
 **Formula**: 2 × (Precision × Recall) / (Precision + Recall)  
-**Our result**: 2 × (0.996 × 0.9396) / (0.996 + 0.9396) = **0.9670**
+**Our result**: 2 × (0.9531 × 0.9610) / (0.9531 + 0.9610) = **0.9570**
 
 The F1 score is the **harmonic mean** of precision and recall. It balances both concerns into a single number. A high F1 requires *both* high precision (few false alarms) and high recall (few missed threats).
 
@@ -91,7 +91,7 @@ If you make precision perfect by being very conservative, recall drops. If you m
 ## AUC-ROC
 
 **AUC-ROC** = Area Under the Receiver Operating Characteristic Curve  
-**Our result**: **0.9873**
+**Our result**: **0.9892**
 
 This requires understanding the ROC curve first.
 
@@ -120,7 +120,7 @@ TPR  1.0 │ ●───────────────────  ← P
          0.0  0.2  0.4  0.6  0.8  1.0  FPR
 ```
 
-**AUC** = the area under this curve. Ranges from 0.5 (random guessing) to 1.0 (perfect). Our AUC of 0.9873 means: if you randomly pick one malware sample and one benign sample, the model ranks the malware higher 98.73% of the time.
+**AUC** = the area under this curve. Ranges from 0.5 (random guessing) to 1.0 (perfect). Our AUC of 0.9892 means: if you randomly pick one malware sample and one benign sample, the model ranks the malware higher 98.92% of the time.
 
 AUC-ROC is threshold-independent — it measures discrimination ability regardless of where you set the cutoff.
 
@@ -128,58 +128,57 @@ AUC-ROC is threshold-independent — it measures discrimination ability regardle
 
 ## Average Precision (AP)
 
-**Our result**: **0.9977**
+**Our result**: **0.9914**
 
-Similar to AUC-ROC, but uses the **Precision-Recall curve** instead. This is more informative for imbalanced datasets (like ours, with 85% malicious).
-
-The PR curve plots Precision on the Y-axis vs Recall on the X-axis. A perfect classifier hugs the top-right corner (high precision at high recall). AP = 0.9977 is very close to perfect.
+Similar to AUC-ROC, but uses the **Precision-Recall curve** instead. The PR curve plots Precision on the Y-axis vs Recall on the X-axis. A perfect classifier hugs the top-right corner (high precision at high recall). AP = 0.9914 is very close to perfect.
 
 ---
 
-## TPR @ FPR=10⁻³ — The Most Important Metric
+## TPR @ FPR=10⁻³ — The Enterprise Deployability Metric
 
-**Our result**: **0.9396 (93.96%)**
+**Our result**: **0.4252 (42.52%)**  
+**Paper baseline**: **0.5464 (54.64%)**
 
-**This is the metric that determines real-world deployability.**
+**This is the metric that determines real-world deployability at extreme precision.**
 
 In a real enterprise with, say, 100,000 Windows computers:
 - Each computer runs hundreds of processes daily
 - A security system might analyze tens of thousands of files per day
 - FPR of 1% would mean: 1% of benign files flagged → hundreds or thousands of false alarms per day
-- No team of analysts can investigate thousands of alerts daily — they would either be overwhelmed or start ignoring alerts entirely
+- No team of analysts can investigate thousands of alerts daily
 
-**FPR = 10⁻³ (0.1%)** is the maximum acceptable: at most 1 in 1,000 benign files triggers an alert. At this operating point, we must still catch as many real threats as possible.
+**FPR = 10⁻³ (0.1%)** is the maximum acceptable: at most 1 in 1,000 benign files triggers an alert.
 
-**TPR @ FPR=10⁻³ = 93.96%** means: at the threshold where only 0.1% of benign files are falsely flagged, the model still detects 93.96% of all malware.
+**TPR @ FPR=10⁻³ = 42.52%** means: at the threshold where only 0.1% of benign files are falsely flagged, the enhanced model detects 42.52% of malware. The paper baseline achieves 54.64% at this operating point — a trade-off where the baseline model's more conservative scoring works better at this extreme threshold, even though NebulaEnhanced wins on every aggregate metric (AUC, F1, accuracy, precision, recall).
 
-This metric comes directly from the Nebula paper and reflects what the security industry actually cares about.
+This metric comes directly from the Nebula paper and reflects what the security industry cares about for fully automated, zero-analyst pipelines.
 
 ---
 
 ## Summary: Our Results vs What They Mean
 
-| Metric | Our Score | What It Means in Plain English |
-|---|---|---|
-| Accuracy | 94.57% | 94.6 out of 100 files are classified correctly |
-| Precision | 99.60% | When we ring the alarm, we are right 99.6% of the time |
-| Recall | 93.96% | We catch 94 out of every 100 malware samples |
-| F1 Score | 0.9670 | Strong balance between precision and recall |
-| AUC-ROC | 0.9873 | We rank malware above benign 98.7% of the time |
-| Avg Precision | 0.9977 | Near-perfect precision-recall trade-off |
-| TPR @ FPR=1e-3 | 93.96% | At enterprise deployment threshold, we still catch 94% of threats |
-| Confusion matrix | TN=47 FP=1 FN=16 TP=249 | Only 1 false alarm, only 16 missed threats out of 313 samples |
+| Metric | NebulaEnhanced | Paper Baseline | What It Means in Plain English |
+|---|---|---|---|
+| Accuracy | 95.41% | 93.78% | 95.4 out of 100 files classified correctly |
+| Precision | 95.31% | 94.46% | When we ring the alarm, we are right 95.3% of the time |
+| Recall | 96.10% | 93.79% | We catch 96 out of every 100 malware samples |
+| F1 Score | 0.9570 | 0.9412 | Strong balance between precision and recall |
+| AUC-ROC | 0.9892 | 0.9860 | We rank malware above benign 98.9% of the time |
+| Avg Precision | 0.9914 | 0.9886 | Near-perfect precision-recall trade-off |
+| TPR @ FPR=1e-3 | 42.52% | 54.64% | At extreme enterprise threshold, baseline has an edge |
+| Confusion matrix (Enhanced) | TN=1410 FP=80 FN=66 TP=1625 | — | 80 false alarms, 66 missed threats out of 3,181 samples |
 
 ---
 
 ## Why Not 100%?
 
-The 16 missed malware samples (false negatives) represent the model's hardest cases:
+The 66 missed malware samples (false negatives) represent the model's hardest cases:
 - Very short execution traces with few API calls (not enough behavioral signal)
 - Heavily obfuscated samples that load their malicious behavior late
 - Very rare malware families the model has seen few examples of
 - Samples whose heuristic labels in our dataset may actually be incorrect
 
-The 1 false positive might be a legitimate program that uses unusual APIs (e.g. a security tool that uses low-level memory APIs for legitimate reasons).
+The 80 false positives are likely legitimate programs that use unusual APIs (e.g. security tools that use low-level memory APIs for legitimate purposes, or software with unusual but benign network patterns).
 
 ---
 

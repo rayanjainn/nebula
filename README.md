@@ -189,7 +189,7 @@ where Q, K, V are the query, key, value projections of that span's tokens. The 8
 
 ### 5.4 Multi-Head Attention
 
-Each attention layer uses **8 attention heads**, each operating in a subspace of dimension d_model/n_heads = 64/8 = 8. Different heads learn to attend to different types of relationships: one head might specialize in detecting injection patterns, another in recognizing network activity.
+Each attention layer uses **8 attention heads**, each operating in a subspace of dimension d_model/n_heads = 128/8 = 16. Different heads learn to attend to different types of relationships: one head might specialize in detecting injection patterns, another in recognizing network activity.
 
 ### 5.5 Feed-Forward Sublayer
 
@@ -199,7 +199,7 @@ After each attention sublayer, a position-wise feed-forward network applies:
 FFN(x) = GELU(x·W₁ + b₁)·W₂ + b₂
 ```
 
-with inner dimension d_hidden = 256 (4× the model dimension d_model = 64). GELU (Gaussian Error Linear Unit) is a smooth, differentiable approximation of ReLU that tends to train faster and reach better optima.
+with inner dimension d_hidden = 512 (4× the model dimension d_model = 128). GELU (Gaussian Error Linear Unit) is a smooth, differentiable approximation of ReLU that tends to train faster and reach better optima.
 
 ### 5.6 Complete Forward Pass
 
@@ -207,10 +207,10 @@ with inner dimension d_hidden = 256 (4× the model dimension d_model = 64). GELU
 Input token IDs (batch_size, 512)
     │
     ▼
-Token Embedding  (50k vocab → 64-dim)  + scale by √64
+Token Embedding  (50k vocab → 128-dim)  + scale by √128
     │
     ▼
-Prepend CLS token  →  (batch_size, 513, 64)
+Prepend CLS token  →  (batch_size, 513, 128)
     │
     ▼
 Positional Encoding  (sinusoidal, added in-place)
@@ -219,23 +219,23 @@ Positional Encoding  (sinusoidal, added in-place)
 Split:  [CLS] | [tokens 1..512]
          │             │
          │      ┌──────┴──────┐
-         │      │ Chunked SA  │  × 2 layers
+         │      │ Chunked SA  │  × 3 layers
          │      │  (8 spans)  │
          │      └──────┬──────┘
          │             │
          └─────┬────── ┘
-               │  concat → (batch_size, 513, 64)
+               │  concat → (batch_size, 513, 128)
                ▼
          Global Attention Layer
                │
                ▼
-         CLS output → (batch_size, 64)
+         CLS output → (batch_size, 128)
                │
                ▼
          LayerNorm
                │
                ▼
-         Classifier Head:  Linear(64→64) → LayerNorm → GELU → Dropout(0.3) → Linear(64→1)
+         Classifier Head:  Linear(128→64) → LayerNorm → GELU → Dropout(0.1) → Linear(64→1)
                │
                ▼
          Logit → sigmoid → Probability [0, 1]
@@ -245,13 +245,13 @@ Split:  [CLS] | [tokens 1..512]
 
 | Component | Parameters |
 |---|---|
-| Token embedding (50k × 64) | 3,200,000 |
-| CLS token | 64 |
+| Token embedding (50k × 128) | 6,400,000 |
+| CLS token | 128 |
 | Positional encoding | 0 (fixed sinusoidal) |
-| 2× Chunked attention layers | ~133k |
-| Global attention layer | ~66k |
+| 3× Chunked attention layers | ~591k |
+| Global attention layer | ~197k |
 | Classifier head | ~8k |
-| **Total** | **~3.4M** |
+| **Total** | **~7.2M** |
 
 ---
 
@@ -313,29 +313,29 @@ This implementation extends the chunked-attention Transformer architecture (Triz
 
 ### 7.1 Dataset
 
-The dataset comprises **1,561 Windows executable behavior traces** from Speakeasy emulation, sourced from:
+The dataset comprises **15,902 Windows executable behavior traces** from Speakeasy emulation, sourced from:
 
 | Source | Count | Description |
 |---|---|---|
-| HuggingFace `dtrizna/speakeasy_trainset` | 1,452 | Malware and benign samples curated for research |
-| Speakeasy example reports | 109 | Real malware reports from the Speakeasy repository |
-| **Total** | **1,561** | |
+| HuggingFace `dtrizna/speakeasy_trainset` | ~15,793 | Malware and benign samples curated for research |
+| Speakeasy example reports | ~109 | Real malware reports from the Speakeasy repository |
+| **Total** | **15,902** | |
 
 Label distribution:
 
 | Label | Count | % |
 |---|---|---|
-| Malicious | 1,323 | 84.8% |
-| Benign | 238 | 15.2% |
+| Malicious | ~8,460 | 53.2% |
+| Benign | ~7,442 | 46.8% |
 
-Families represented: trojans (1,217), ransomware (102), benign software (238), remote access trojans (3), backdoors (1).
+The dataset is substantially larger and more balanced than prior versions, with roughly equal representation of malicious and benign samples.
 
 ### 7.2 Train/Validation Split
 
 80% / 20% stratified split (stratified = same malicious/benign ratio in both splits):
 
-- **Train**: 1,248 samples (1,058 malicious, 190 benign)
-- **Validation**: 313 samples (265 malicious, 48 benign)
+- **Train**: 12,721 samples (6,762 malicious, ~5,959 benign)
+- **Validation**: 3,181 samples (1,691 malicious, ~1,490 benign)
 
 ### 7.3 Loss Function
 
@@ -359,14 +359,14 @@ Because the dataset is imbalanced (~85% malicious), we monitor recall carefully 
 | Gradient clip | 1.0 (global norm) |
 | Warmup steps | 200 |
 | LR schedule | Cosine annealing |
-| Epochs | 10 |
+| Epochs | 27 (best checkpoint) |
 | Label smoothing | ε = 0.05 |
 
-Each epoch: forward pass on all training batches, compute smoothed BCE loss, backpropagate, clip gradients, step optimizer, update LR schedule. Validation AUC is computed after every epoch; the best checkpoint is saved.
+Each epoch: forward pass on all training batches, compute smoothed BCE loss, backpropagate, clip gradients, step optimizer, update LR schedule. Validation AUC is computed after every epoch; the best checkpoint (epoch 27) is saved.
 
 ### 7.5 Hardware
 
-Training runs on Apple M1 (MPS) or CUDA GPU if available. On MPS, both models (NebulaEnhanced + NebulaPaper baseline) train in approximately **3.4 minutes** combined for 10 epochs each.
+Training runs on CUDA GPU, Apple M1 (MPS), or CPU (auto-selected). On CUDA, NebulaEnhanced trains in approximately **14.7 minutes** for 27 epochs; the paper baseline in approximately **21.8 minutes**.
 
 ---
 
@@ -441,60 +441,59 @@ This combines the speed and consistency of the neural classifier with the contex
 
 ## 10. Results
 
-Both models were trained on the 1,248-sample training set and evaluated on the 313-sample held-out validation set.
+Both models were trained on the 12,721-sample training set and evaluated on the 3,181-sample held-out validation set.
 
 ### 10.1 Primary Results
 
 | Metric | NebulaEnhanced | Baseline (prior approach) | Improvement |
 |---|---|---|---|
-| **AUC-ROC** | **0.9873** | 0.9848 | +0.0025 |
-| **F1 Score** | **0.9670** | 0.9628 | +0.0042 |
-| **Accuracy** | **94.57%** | 93.93% | +0.64pp |
-| **Precision** | **0.9960** | — | — |
-| **Recall** | **0.9396** | — | — |
-| **Average Precision** | **0.9977** | 0.9973 | +0.0004 |
-| **TPR @ FPR=10⁻³** | **0.9396** | 0.9396 | — |
+| **AUC-ROC** | **0.9892** | 0.9860 | +0.0032 |
+| **F1 Score** | **0.9570** | 0.9412 | +0.0158 |
+| **Accuracy** | **95.41%** | 93.78% | +1.63pp |
+| **Precision** | **0.9531** | 0.9446 | +0.0085 |
+| **Recall** | **0.9610** | 0.9379 | +0.0231 |
+| **Average Precision** | **0.9914** | 0.9886 | +0.0028 |
+| **TPR @ FPR=10⁻³** | **0.4252** | 0.5464 | — |
+| **Parameters** | **7.22M** | 7.02M | — |
 
 ### 10.2 Understanding Each Metric
 
-**AUC-ROC** (Area Under the ROC Curve): Measures the model's ability to rank malicious samples above benign ones at *all* possible decision thresholds. AUC=0.9873 means that for a randomly chosen malicious/benign pair, the model assigns a higher score to the malicious sample 98.73% of the time. An AUC of 0.5 is random chance; 1.0 is perfect.
+**AUC-ROC** (Area Under the ROC Curve): Measures the model's ability to rank malicious samples above benign ones at *all* possible decision thresholds. AUC=0.9892 means that for a randomly chosen malicious/benign pair, the model assigns a higher score to the malicious sample 98.92% of the time. An AUC of 0.5 is random chance; 1.0 is perfect.
 
-**F1 Score**: The harmonic mean of precision and recall. Balances the cost of missing real malware (false negatives) against the cost of false alarms (false positives). F1=0.967 is very high for a real-world security dataset.
+**F1 Score**: The harmonic mean of precision and recall. Balances the cost of missing real malware (false negatives) against the cost of false alarms (false positives). F1=0.957 is very high for a real-world security dataset.
 
-**Precision** (0.9960): Of all files flagged as malicious, 99.60% were actually malicious. Extremely few false alarms — an analyst investigating detections would find genuine threats almost every time.
+**Precision** (0.9531): Of all files flagged as malicious, 95.31% were actually malicious. Very few false alarms — an analyst investigating detections would find genuine threats almost every time.
 
-**Recall** (0.9396): Of all actual malware samples, 93.96% were correctly detected. 6% of malware was missed at the default 0.5 threshold.
+**Recall** (0.9610): Of all actual malware samples, 96.10% were correctly detected. Only ~4% of malware was missed at the default 0.5 threshold.
 
-**Average Precision (AP)**: Area under the Precision-Recall curve. Especially meaningful for imbalanced datasets (85% malicious here). AP=0.9977 indicates near-perfect discrimination between classes.
+**Average Precision (AP)**: Area under the Precision-Recall curve. AP=0.9914 indicates near-perfect discrimination between classes across all operating thresholds.
 
-**TPR @ FPR=10⁻³** (True Positive Rate at False Positive Rate = 0.1%): This is the key enterprise deployability metric. In a real Security Operations Center (SOC), analysts cannot investigate every alert. A 1% false positive rate would mean 1 in 100 benign files triggers an investigation, overwhelming the team. The 0.1% threshold (FPR=10⁻³) is the practical maximum for production deployment. At this operating point, the model still correctly detects **93.96%** of malware. This directly measures whether the system is viable in a real enterprise environment.
+**TPR @ FPR=10⁻³** (True Positive Rate at False Positive Rate = 0.1%): This is the key enterprise deployability metric. In a real Security Operations Center (SOC), analysts cannot investigate every alert. The 0.1% threshold (FPR=10⁻³) is the practical maximum for production deployment. At this operating point, the enhanced model detects **42.52%** of malware — the baseline performs better here at 54.64%, indicating a trade-off: NebulaEnhanced achieves higher overall AUC and F1 but the baseline maintains better precision at the extreme low-FPR operating point.
 
 ### 10.3 Confusion Matrix (NebulaEnhanced, threshold = 0.5)
 
 ```
                     Predicted Benign    Predicted Malicious
-Actual Benign              47                   1
-Actual Malicious           16                 249
+Actual Benign           1,410                  80
+Actual Malicious           66               1,625
 ```
 
-- **True Negatives (47)**: Benign files correctly cleared — no investigation triggered
-- **False Positives (1)**: One benign file incorrectly flagged as malware
-- **False Negatives (16)**: 16 malware samples missed — the most critical error type
-- **True Positives (249)**: Malware correctly detected and flagged
+- **True Negatives (1,410)**: Benign files correctly cleared — no investigation triggered
+- **False Positives (80)**: 80 benign files incorrectly flagged as malware
+- **False Negatives (66)**: 66 malware samples missed — the most critical error type
+- **True Positives (1,625)**: Malware correctly detected and flagged
 
-The single false positive is remarkable: out of 48 benign samples, only one triggered a false alarm. This translates to a false positive rate of just 2.08% at threshold=0.5, and drops to near-zero at the FPR=10⁻³ operating point.
-
-The 16 false negatives (out of 265 malicious) represent the model's blind spots — likely heavily obfuscated samples or very short traces that don't contain enough behavioral signal.
+Out of ~1,490 benign validation samples, 80 triggered false alarms (FPR ≈ 5.4% at threshold=0.5). Of 1,691 malicious samples, 66 were missed (FNR ≈ 3.9%).
 
 ### 10.4 Training Dynamics
 
-Both models converged quickly. The enhanced model reached AUC > 0.98 within 4 epochs. The cosine learning rate schedule produced smooth, monotonic improvement in validation metrics without oscillation or signs of overfitting. The full training curves (per-epoch AUC, F1, loss) are visible in the platform's Metrics dashboard.
+The enhanced model's best checkpoint was at epoch 27, reaching AUC=0.9892. The cosine learning rate schedule produced smooth improvement in validation metrics. Both models trained on CUDA GPU — NebulaEnhanced completed in ~14.7 minutes, the paper baseline in ~21.8 minutes. The full per-epoch training curves (AUC, F1, loss) are visible in the platform's Metrics dashboard.
 
 ### 10.5 What This Means
 
-At AUC=0.9873 and TPR=0.9396 @ FPR=10⁻³, this model is in the range of production-grade malware detection systems. For context, the original chunked-Transformer paper reports TPR~0.91 @ FPR=10⁻³ on a larger dataset. Our model achieves comparable performance on a dataset two orders of magnitude smaller, demonstrating that the architectural improvements are meaningful even in the data-limited regime.
+At AUC=0.9892 and F1=0.957 on a 3,181-sample validation set (53% malicious, representing a near-balanced real-world scenario), this model demonstrates strong generalization. NebulaEnhanced outperforms the paper baseline on all aggregate metrics (AUC, F1, accuracy, precision, recall). The architectural improvements — CLS pooling, Pre-LN, global attention, label smoothing, and AdamW — collectively yield a more accurate and better-calibrated classifier.
 
-The extremely high precision (0.996) makes this particularly suitable for tier-1 automated triage: files flagged by this model can be escalated to human analysts with very high confidence that they are genuine threats.
+The high recall (0.961) makes this particularly suitable for tier-1 automated triage: the model catches ~96% of threats while maintaining precision above 95%.
 
 ---
 
@@ -523,7 +522,7 @@ The extremely high precision (0.996) makes this particularly suitable for tier-1
 ┌──────▼──────────┐              ┌──────────▼────────────────────┐
 │  NebulaEnhanced │              │  Ollama Cloud API             │
 │  Transformer    │              │  gemma3:27b                   │
-│  (~3.4M params) │              │  Threat intelligence          │
+│  (~7.2M params) │              │  Threat intelligence          │
 │                 │              │  streaming narrative          │
 │  BPE Tokenizer  │              └───────────────────────────────┘
 │  50k vocab      │
@@ -619,7 +618,7 @@ nebula-enhanced/
 ├── requirements.txt
 ├── start.sh
 ├── data/
-│   ├── merged_dataset.jsonl   # 1,561 labeled behavior traces
+│   ├── merged_dataset.jsonl   # 15,902 labeled behavior traces
 │   └── training_results.json  # All evaluation metrics + curves
 ├── models/
 │   ├── nebula_enhanced.py     # NebulaEnhanced + NebulaPaper

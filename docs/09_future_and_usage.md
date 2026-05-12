@@ -72,7 +72,7 @@ The dashboard you are looking at is fully functional:
 |---|---|
 | **Analyze** page | Submit any Speakeasy JSON report and get a verdict |
 | **XAI** page | See exactly which API calls drove the decision |
-| **Dataset** page | Browse all 1,561 training samples |
+| **Dataset** page | Browse all 15,902 training samples |
 | **Metrics** page | See full training results: ROC curves, confusion matrix, model comparison |
 | **LLM** page | Get a plain-English threat report from gemma3:27b |
 | **Try It Yourself** | Paste any Windows API sequence and check if it looks malicious |
@@ -123,7 +123,7 @@ Being honest about what the system cannot do yet:
 | Limitation | Why | Future Fix |
 |---|---|---|
 | Requires Speakeasy emulation | Raw binaries (.exe, .dll) cannot be analyzed directly — they must first be run through Speakeasy | Integrate Speakeasy as a preprocessing step |
-| Dataset size | 1,561 samples is small; model may miss rare malware families | Continuous learning from new samples |
+| Dataset size | 15,902 samples is a solid research dataset, but production detectors use millions | Continuous learning from new samples |
 | Label quality | Some labels were assigned by heuristic rules, not ground truth | Manual expert labeling of edge cases |
 | Only Windows | Speakeasy only emulates Windows | Add Linux ELF support via other emulators |
 | No real-time updates | Model does not learn from new threats automatically | Online learning / periodic retraining pipeline |
@@ -135,7 +135,7 @@ Being honest about what the system cannot do yet:
 
 ### Near-Term Improvements
 
-**Larger dataset**: The model was trained on 1,561 samples. Production malware detectors use millions. Feeding in more Speakeasy reports from public malware repositories (VirusTotal, MalwareBazaar, ANY.RUN) would dramatically improve coverage of rare families.
+**Larger dataset**: The model was trained on 15,902 samples. Production malware detectors use millions. Feeding in more Speakeasy reports from public malware repositories (VirusTotal, MalwareBazaar, ANY.RUN) would improve coverage of rare families.
 
 **Continuous retraining**: Malware evolves. New families appear daily. An automated pipeline that collects new samples, labels them (by consensus from multiple engines), and periodically retrains the model would keep accuracy high over time.
 
