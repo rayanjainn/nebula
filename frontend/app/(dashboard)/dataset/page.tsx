@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { api, DatasetStats, SampleRow } from "@/lib/api";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import { 
   Database, RefreshCw, Loader2, HelpCircle, X, Info, BookOpen, BrainCircuit, Sparkles,
-  Search, ChevronLeft, ChevronRight, Copy, Globe, Shield, CheckCircle, Activity,
+  Search, Copy, Globe, Shield, CheckCircle, Activity,
   Layers
 } from "lucide-react";
 
@@ -270,40 +270,71 @@ export default function DatasetPage() {
   const [samplesLoading, setSamplesLoading] = useState(false);
   const [showGlossary, setShowGlossary] = useState(false);
   
-  // Pagination & Filtering state
+  // Filtering & infinite-scroll state
   const [page, setPage] = useState(1);
-  const [limit] = useState(10);
+  const limit = 10;
   const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
   const [search, setSearch] = useState("");
   const [labelFilter, setLabelFilter] = useState<number | undefined>(undefined);
   const [familyFilter, setFamilyFilter] = useState("all");
   const [isBalanced, setIsBalanced] = useState(false);
-  const totalPages = Math.ceil(total / limit);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadingRef = useRef(false);
 
   useEffect(() => {
     api.datasetStats().then(setStats).finally(() => setLoading(false));
   }, []);
 
+  // Reset and reload from page 1 when filters change
   useEffect(() => {
-    fetchSamples();
-  }, [page, labelFilter, familyFilter, search, isBalanced]);
+    setSamples([]);
+    setPage(1);
+    setHasMore(true);
+    loadingRef.current = false;
+  }, [labelFilter, familyFilter, search, isBalanced]);
 
-  async function fetchSamples() {
+  // Fetch one page and append
+  const fetchPage = useCallback(async (pageNum: number) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setSamplesLoading(true);
     try {
-      const r = await api.datasetSample(page, limit, labelFilter, familyFilter, search, isBalanced);
-      setSamples(r.samples);
+      const r = await api.datasetSample(pageNum, limit, labelFilter, familyFilter, search, isBalanced);
       setTotal(r.total);
+      setSamples((prev) => pageNum === 1 ? r.samples : [...prev, ...r.samples]);
+      setHasMore(pageNum * limit < r.total);
     } catch (err) {
       console.error(err);
     } finally {
       setSamplesLoading(false);
+      loadingRef.current = false;
     }
-  }
+  }, [labelFilter, familyFilter, search, isBalanced]);
+
+  // Trigger fetch whenever page changes
+  useEffect(() => {
+    fetchPage(page);
+  }, [page, fetchPage]);
+
+  // IntersectionObserver to load next page when sentinel enters viewport
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !loadingRef.current) {
+          setPage((p) => p + 1);
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore]);
 
   function handleLabelFilter(label: number | undefined) {
     setLabelFilter(label);
-    setPage(1);
   }
 
   if (loading) {
@@ -537,7 +568,7 @@ export default function DatasetPage() {
           <div className="flex items-center gap-2">
             <button
               className="btn-secondary text-xs py-2"
-              onClick={() => fetchSamples()}
+              onClick={() => { setSamples([]); setPage(1); setHasMore(true); loadingRef.current = false; }}
               disabled={samplesLoading}
             >
               {samplesLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
@@ -681,48 +712,15 @@ export default function DatasetPage() {
           )}
         </div>
 
-        {/* Pagination Footer */}
-        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
-          <p className="text-xs text-slate-500">
-            Showing <span className="font-medium text-slate-700">{(page-1)*limit + 1}</span> to{" "}
-            <span className="font-medium text-slate-700">{Math.min(page*limit, total)}</span> of{" "}
-            <span className="font-medium text-slate-700">{total.toLocaleString()}</span> samples
-          </p>
-          <div className="flex items-center gap-1">
-            <button
-              className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              onClick={() => setPage(page - 1)}
-              disabled={page === 1}
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <div className="flex items-center gap-1 mx-2">
-               {[...Array(Math.min(5, totalPages))].map((_, i) => {
-                 let p = i + 1;
-                 if (totalPages > 5 && page > 3) p = page - 2 + i;
-                 if (p > totalPages) return null;
-                 if (p <= 0) return null;
-                 return (
-                  <button
-                    key={p}
-                    onClick={() => setPage(p)}
-                    className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
-                      page === p ? "bg-indigo-600 text-white shadow-md shadow-indigo-200" : "hover:bg-slate-200 text-slate-600"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                 );
-               })}
-            </div>
-            <button
-              className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-              onClick={() => setPage(page + 1)}
-              disabled={page >= totalPages}
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
+        {/* Infinite scroll sentinel + footer */}
+        <div ref={sentinelRef} className="px-4 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-center gap-2">
+          {samplesLoading ? (
+            <><Loader2 size={14} className="animate-spin text-indigo-400" /><span className="text-xs text-slate-400">Loading more…</span></>
+          ) : hasMore ? (
+            <span className="text-xs text-slate-400">Scroll for more · {samples.length} of {total.toLocaleString()} shown</span>
+          ) : (
+            <span className="text-xs text-slate-400">All {total.toLocaleString()} samples loaded</span>
+          )}
         </div>
       </div>
 

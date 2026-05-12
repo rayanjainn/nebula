@@ -406,29 +406,44 @@ def llm_compare(req: CompareRequest):
     return {"comparison": comparison}
 
 
-@app.get("/dataset/stats")
-def dataset_stats():
-    """Stats about the merged dataset."""
-    merged = ROOT / "data" / "merged_dataset.jsonl"
-    
-    if not merged.exists():
-        raise HTTPException(404, "Dataset not found")
+# ── dataset cache ─────────────────────────────────────────────────────────────
+_dataset_cache: Optional[List[Dict]] = None
+_dataset_mtime: float = 0.0
 
-    all_rows = []
+def _load_dataset() -> List[Dict]:
+    """Load merged_dataset.jsonl into memory, re-reading only when the file changes."""
+    global _dataset_cache, _dataset_mtime
+    merged = ROOT / "data" / "merged_dataset.jsonl"
+    if not merged.exists():
+        return []
+    mtime = merged.stat().st_mtime
+    if _dataset_cache is not None and mtime == _dataset_mtime:
+        return _dataset_cache
+    rows: List[Dict] = []
     with open(merged) as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
             r = json.loads(line)
-            # Assign a stable display hash: real sha256 > apihash > row-index stub
             if not r.get("sha256"):
                 ah = r.get("apihash", "")
                 r["sha256"] = ah if (ah and ah != "unknown") else f"row_{i:06d}"
-            all_rows.append(r)
+            rows.append(r)
+    _dataset_cache = rows
+    _dataset_mtime = mtime
+    return rows
 
-    total_records = len(all_rows)
-    total = total_records
+
+@app.get("/dataset/stats")
+def dataset_stats():
+    """Stats about the merged dataset."""
+    merged = ROOT / "data" / "merged_dataset.jsonl"
+    if not merged.exists():
+        raise HTTPException(404, "Dataset not found")
+
+    all_rows = _load_dataset()
+    total = len(all_rows)
     malicious = sum(1 for r in all_rows if r.get("label", 0) == 1)
     families: Dict[str, int] = {}
     sources: Dict[str, int] = {}
@@ -439,13 +454,12 @@ def dataset_stats():
         families[fam] = families.get(fam, 0) + 1
         src = r.get("source", "unknown")
         sources[src] = sources.get(src, 0) + 1
-        apis = r.get("apis") or []
-        api_lens.append(len(apis))
+        api_lens.append(len(r.get("apis") or []))
 
     full_path = ROOT / "data" / "full" / "speakeasy_train_full.jsonl"
     return {
         "total": total,
-        "total_records": total_records,
+        "total_records": total,
         "malicious": malicious,
         "benign": total - malicious,
         "malicious_pct": round(malicious / total * 100, 1) if total > 0 else 0,
@@ -453,7 +467,7 @@ def dataset_stats():
         "sources": sources,
         "avg_api_calls": round(float(np.mean(api_lens)), 1) if api_lens else 0,
         "max_api_calls": max(api_lens) if api_lens else 0,
-        "full_dataset_found": full_path.exists()
+        "full_dataset_found": full_path.exists(),
     }
 
 
@@ -464,53 +478,38 @@ def dataset_sample(
     label: Optional[int] = None,
     family: Optional[str] = None,
     search: Optional[str] = None,
-    balanced: bool = False
+    balanced: bool = False,
 ):
     """Return paginated samples with search and filtering."""
     merged = ROOT / "data" / "merged_dataset.jsonl"
     if not merged.exists():
         return {"samples": [], "total": 0}
 
-    all_rows = []
-    with open(merged) as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            d = json.loads(line)
-            # Stable display hash
-            if not d.get("sha256"):
-                ah = d.get("apihash", "")
-                d["sha256"] = ah if (ah and ah != "unknown") else f"row_{i:06d}"
+    all_rows = _load_dataset()
 
-            if label is not None and d.get("label") != label:
-                continue
-            if family and family.lower() != "all" and d.get("family", "").lower() != family.lower():
-                continue
-            if search:
-                s = search.lower()
-                if s not in d["sha256"].lower() and s not in d.get("family", "").lower():
-                    continue
-            all_rows.append(d)
+    # Filter in one pass
+    rows: List[Dict] = []
+    fam_lower = family.lower() if family and family.lower() != "all" else None
+    search_lower = search.lower() if search else None
+    for d in all_rows:
+        if label is not None and d.get("label") != label:
+            continue
+        if fam_lower and d.get("family", "").lower() != fam_lower:
+            continue
+        if search_lower and search_lower not in d["sha256"].lower() and search_lower not in d.get("family", "").lower():
+            continue
+        rows.append(d)
 
-    rows = all_rows
-    
     if balanced:
         malicious_pool = [r for r in rows if r.get("label") == 1]
         benign_pool = [r for r in rows if r.get("label") == 0]
         count = min(len(malicious_pool), len(benign_pool))
-        # Keep it deterministic for pagination
         rows = malicious_pool[:count] + benign_pool[:count]
-        
-    total = len(rows)
-    
-    # Sort malicious first
+
     rows.sort(key=lambda x: x.get("label", 0), reverse=True)
-    
-    start = (page - 1) * limit
-    end = start + limit
-    sample_page = rows[start:end]
-    
+    total = len(rows)
+    sample_page = rows[(page - 1) * limit : page * limit]
+
     result = []
     for r in sample_page:
         apis = r.get("apis") or []
@@ -526,7 +525,7 @@ def dataset_sample(
             "has_files": len(r.get("file_access") or []) > 0,
             "source": r.get("source", "unknown"),
         })
-    
+
     return {"samples": result, "total": total, "page": page, "limit": limit}
 
 
